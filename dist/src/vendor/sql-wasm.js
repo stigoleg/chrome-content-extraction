@@ -1,4 +1,5 @@
 
+// @ts-nocheck
 // We are modularizing this manually because the current modularize setting in Emscripten has some issues:
 // https://github.com/kripken/emscripten/issues/5820
 // In addition, When you use emcc's modularization, it still expects to export a global object called `Module`,

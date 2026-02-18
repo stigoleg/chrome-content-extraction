@@ -1,6 +1,9 @@
-const commentInput = document.getElementById("commentInput");
-const cancelButton = document.getElementById("cancelButton");
-const saveButton = document.getElementById("saveButton");
+/** @type {HTMLTextAreaElement} */
+const commentInput = /** @type {HTMLTextAreaElement} */ (document.getElementById("commentInput"));
+/** @type {HTMLButtonElement} */
+const cancelButton = /** @type {HTMLButtonElement} */ (document.getElementById("cancelButton"));
+/** @type {HTMLButtonElement} */
+const saveButton = /** @type {HTMLButtonElement} */ (document.getElementById("saveButton"));
 
 const params = new URLSearchParams(window.location.search);
 const requestId = params.get("requestId");

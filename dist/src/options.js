@@ -8,19 +8,32 @@ import {
   writeJsonToDirectory
 } from "./storage.js";
 
-const folderStatus = document.getElementById("folderStatus");
-const chooseFolderButton = document.getElementById("chooseFolderButton");
-const testWriteButton = document.getElementById("testWriteButton");
-const clearFolderButton = document.getElementById("clearFolderButton");
-const storageBackendJson = document.getElementById("storageBackendJson");
-const storageBackendSqlite = document.getElementById("storageBackendSqlite");
-const folderOrganizationSection = document.getElementById("folderOrganizationSection");
-const organizeByDateInput = document.getElementById("organizeByDateInput");
-const organizeByTypeInput = document.getElementById("organizeByTypeInput");
-const organizeOrderSelect = document.getElementById("organizeOrderSelect");
-const compressLargeTextInput = document.getElementById("compressLargeTextInput");
-const compressionThresholdInput = document.getElementById("compressionThresholdInput");
-const saveSettingsButton = document.getElementById("saveSettingsButton");
+/** @type {HTMLDivElement} */
+const folderStatus = /** @type {HTMLDivElement} */ (document.getElementById("folderStatus"));
+/** @type {HTMLButtonElement} */
+const chooseFolderButton = /** @type {HTMLButtonElement} */ (document.getElementById("chooseFolderButton"));
+/** @type {HTMLButtonElement} */
+const testWriteButton = /** @type {HTMLButtonElement} */ (document.getElementById("testWriteButton"));
+/** @type {HTMLButtonElement} */
+const clearFolderButton = /** @type {HTMLButtonElement} */ (document.getElementById("clearFolderButton"));
+/** @type {HTMLInputElement} */
+const storageBackendJson = /** @type {HTMLInputElement} */ (document.getElementById("storageBackendJson"));
+/** @type {HTMLInputElement} */
+const storageBackendSqlite = /** @type {HTMLInputElement} */ (document.getElementById("storageBackendSqlite"));
+/** @type {HTMLElement} */
+const folderOrganizationSection = /** @type {HTMLElement} */ (document.getElementById("folderOrganizationSection"));
+/** @type {HTMLInputElement} */
+const organizeByDateInput = /** @type {HTMLInputElement} */ (document.getElementById("organizeByDateInput"));
+/** @type {HTMLInputElement} */
+const organizeByTypeInput = /** @type {HTMLInputElement} */ (document.getElementById("organizeByTypeInput"));
+/** @type {HTMLSelectElement} */
+const organizeOrderSelect = /** @type {HTMLSelectElement} */ (document.getElementById("organizeOrderSelect"));
+/** @type {HTMLInputElement} */
+const compressLargeTextInput = /** @type {HTMLInputElement} */ (document.getElementById("compressLargeTextInput"));
+/** @type {HTMLInputElement} */
+const compressionThresholdInput = /** @type {HTMLInputElement} */ (document.getElementById("compressionThresholdInput"));
+/** @type {HTMLButtonElement} */
+const saveSettingsButton = /** @type {HTMLButtonElement} */ (document.getElementById("saveSettingsButton"));
 
 function setStatus(text, isError = false) {
   folderStatus.textContent = text;
@@ -67,7 +80,7 @@ function toggleOrganizationInputs(disabled) {
 function updateOrderVisibility() {
   const showOrder = organizeByDateInput.checked && organizeByTypeInput.checked;
   organizeOrderSelect.disabled = !showOrder;
-  const orderField = organizeOrderSelect.closest(".field");
+  const orderField = /** @type {HTMLElement|null} */ (organizeOrderSelect.closest(".field"));
   if (orderField) {
     orderField.hidden = !showOrder;
   }
@@ -99,13 +112,14 @@ async function persistCaptureSettings() {
 }
 
 async function chooseFolder() {
-  if (typeof window.showDirectoryPicker !== "function") {
+  const picker = /** @type {any} */ (window).showDirectoryPicker;
+  if (typeof picker !== "function") {
     setStatus("Directory picker is not available in this Chrome version.", true);
     return;
   }
 
   try {
-    const handle = await window.showDirectoryPicker({ mode: "readwrite" });
+    const handle = await picker({ mode: "readwrite" });
     const granted = await ensureReadWritePermission(handle);
     if (!granted) {
       setStatus("Folder permission was not granted.", true);

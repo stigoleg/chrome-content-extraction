@@ -136,6 +136,42 @@ async function extractPdfViaOffscreen(url, allowUnknownContentType) {
   return response.data;
 }
 
+async function readClipboardTextViaOffscreen() {
+  const ok = await ensureOffscreenDocument();
+  if (!ok) {
+    return "";
+  }
+
+  const response = await chrome.runtime.sendMessage({
+    type: "OFFSCREEN_READ_CLIPBOARD"
+  });
+
+  if (!response?.ok) {
+    return "";
+  }
+
+  return String(response.text || "").trim();
+}
+
+async function copySelectionFromPage(tabId) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      world: "MAIN",
+      func: () => {
+        try {
+          return document.execCommand("copy");
+        } catch (_error) {
+          return false;
+        }
+      }
+    });
+    return Array.isArray(results) && results.some((item) => Boolean(item?.result));
+  } catch (_error) {
+    return false;
+  }
+}
+
 function slugifySegment(input) {
   return String(input || "")
     .toLowerCase()
@@ -462,7 +498,14 @@ async function handleSelectionSave(tabId, selectionOverride = "") {
         : capture.selectedText && capture.selectedText.trim()
           ? capture.selectedText
           : await readSelectionFromPage(tabId);
-    return handlePdfCapture(tabId, null, fallbackSelection);
+    let resolvedSelection = fallbackSelection;
+    if (!resolvedSelection) {
+      const copied = await copySelectionFromPage(tabId);
+      if (copied) {
+        resolvedSelection = await readClipboardTextViaOffscreen();
+      }
+    }
+    return handlePdfCapture(tabId, null, resolvedSelection);
   }
 
   const record = buildCaptureRecord({
@@ -499,7 +542,14 @@ async function handleSelectionSaveWithComment(tabId, selectionOverride = "") {
         : capture.selectedText && capture.selectedText.trim()
           ? capture.selectedText
           : await readSelectionFromPage(tabId);
-    return handlePdfCapture(tabId, capture.comment ?? "", fallbackSelection);
+    let resolvedSelection = fallbackSelection;
+    if (!resolvedSelection) {
+      const copied = await copySelectionFromPage(tabId);
+      if (copied) {
+        resolvedSelection = await readClipboardTextViaOffscreen();
+      }
+    }
+    return handlePdfCapture(tabId, capture.comment ?? "", resolvedSelection);
   }
 
   const record = buildCaptureRecord({

@@ -3,6 +3,7 @@ function normalizeText(value) {
 }
 
 function getMetaContent(selector) {
+  /** @type {HTMLMetaElement|null} */
   const node = document.querySelector(selector);
   return node?.content?.trim() || null;
 }
@@ -17,7 +18,7 @@ function getMetaByProperty(property) {
 
 function getAllMetaByProperty(property) {
   return Array.from(document.querySelectorAll(`meta[property="${property}"]`))
-    .map((node) => node?.content?.trim())
+    .map((node) => /** @type {HTMLMetaElement} */ (node)?.content?.trim())
     .filter(Boolean);
 }
 
@@ -99,11 +100,20 @@ function deriveTitleFromUrl(rawUrl) {
 }
 
 function getPageMetadata() {
-  const canonicalUrl = document.querySelector('link[rel="canonical"]')?.href || null;
-  const ampUrl = document.querySelector('link[rel="amphtml"]')?.href || null;
+  /** @type {HTMLLinkElement|null} */
+  const canonicalNode = document.querySelector('link[rel="canonical"]');
+  /** @type {HTMLLinkElement|null} */
+  const ampNode = document.querySelector('link[rel="amphtml"]');
+  /** @type {HTMLLinkElement|null} */
+  const iconNode = document.querySelector('link[rel="icon"]');
+  /** @type {HTMLLinkElement|null} */
+  const shortcutIconNode = document.querySelector('link[rel="shortcut icon"]');
+
+  const canonicalUrl = canonicalNode?.href || null;
+  const ampUrl = ampNode?.href || null;
   const favicon =
-    document.querySelector('link[rel="icon"]')?.href ||
-    document.querySelector('link[rel="shortcut icon"]')?.href ||
+    iconNode?.href ||
+    shortcutIconNode?.href ||
     null;
 
   const description =
@@ -509,6 +519,7 @@ async function tryOpenTranscriptPanel() {
     return true;
   }
 
+  /** @type {HTMLElement|null} */
   const menuButton =
     document.querySelector('ytd-menu-renderer button[aria-label*="More actions" i]') ||
     document.querySelector('button[aria-label*="more actions" i]');
@@ -520,16 +531,19 @@ async function tryOpenTranscriptPanel() {
   menuButton.click();
   await sleep(250);
 
-  const menuItems = Array.from(document.querySelectorAll("tp-yt-paper-item, ytd-menu-service-item-renderer"));
+  const menuItems = Array.from(
+    document.querySelectorAll("tp-yt-paper-item, ytd-menu-service-item-renderer")
+  );
   const transcriptItem = menuItems.find((item) => /show transcript/i.test(item.textContent || ""));
 
   if (!transcriptItem) {
+    /** @type {HTMLElement|null} */
     const dismiss = document.querySelector("tp-yt-iron-dropdown[opened] tp-yt-paper-item");
     dismiss?.click();
     return false;
   }
 
-  transcriptItem.click();
+  /** @type {HTMLElement} */ (transcriptItem).click();
 
   for (let i = 0; i < 10; i += 1) {
     await sleep(250);

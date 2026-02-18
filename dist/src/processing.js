@@ -59,7 +59,11 @@ async function gzipPartsToBase64(parts) {
 function gzipPartsWithPako(parts) {
   try {
     const encoder = new TextEncoder();
-    const gzip = new pako.Gzip();
+    const GzipCtor = /** @type {any} */ (pako).Gzip;
+    if (!GzipCtor) {
+      return gzipWithPako(parts.join("\n\n"));
+    }
+    const gzip = new GzipCtor();
     for (let i = 0; i < parts.length; i += 1) {
       const chunk = parts[i] || "";
       if (chunk) {

@@ -76,6 +76,28 @@ async function captureFromTab(tabId, messageType) {
   }
 }
 
+async function readSelectionFromPage(tabId) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      world: "MAIN",
+      func: () => window.getSelection()?.toString() || ""
+    });
+    if (!Array.isArray(results)) {
+      return "";
+    }
+    for (const item of results) {
+      const value = item?.result;
+      if (value && String(value).trim()) {
+        return String(value).trim();
+      }
+    }
+  } catch (_error) {
+    return "";
+  }
+  return "";
+}
+
 async function ensureOffscreenDocument() {
   if (!chrome.offscreen?.createDocument) {
     return false;
@@ -112,6 +134,42 @@ async function extractPdfViaOffscreen(url, allowUnknownContentType) {
   }
 
   return response.data;
+}
+
+async function readClipboardTextViaOffscreen() {
+  const ok = await ensureOffscreenDocument();
+  if (!ok) {
+    return "";
+  }
+
+  const response = await chrome.runtime.sendMessage({
+    type: "OFFSCREEN_READ_CLIPBOARD"
+  });
+
+  if (!response?.ok) {
+    return "";
+  }
+
+  return String(response.text || "").trim();
+}
+
+async function copySelectionFromPage(tabId) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      world: "MAIN",
+      func: () => {
+        try {
+          return document.execCommand("copy");
+        } catch (_error) {
+          return false;
+        }
+      }
+    });
+    return Array.isArray(results) && results.some((item) => Boolean(item?.result));
+  } catch (_error) {
+    return false;
+  }
 }
 
 function slugifySegment(input) {
@@ -425,16 +483,29 @@ async function notifyError(tabId, error) {
   }
 }
 
-async function handleSelectionSave(tabId) {
+async function handleSelectionSave(tabId, selectionOverride = "") {
   const capture = await captureFromTab(tabId, "CAPTURE_SELECTION");
   if (!capture?.ok) {
     if (capture?.missingReceiver) {
-      return handlePdfCapture(tabId, null);
+      return handlePdfCapture(tabId, null, selectionOverride);
     }
     throw new Error(capture?.error || "Failed to capture selection");
   }
   if (capture?.isPdf) {
-    return handlePdfCapture(tabId, null, capture.selectedText);
+    const fallbackSelection =
+      selectionOverride && selectionOverride.trim()
+        ? selectionOverride
+        : capture.selectedText && capture.selectedText.trim()
+          ? capture.selectedText
+          : await readSelectionFromPage(tabId);
+    let resolvedSelection = fallbackSelection;
+    if (!resolvedSelection) {
+      const copied = await copySelectionFromPage(tabId);
+      if (copied) {
+        resolvedSelection = await readClipboardTextViaOffscreen();
+      }
+    }
+    return handlePdfCapture(tabId, null, resolvedSelection);
   }
 
   const record = buildCaptureRecord({
@@ -452,7 +523,7 @@ async function handleSelectionSave(tabId) {
   return { fileName, record: savedRecord };
 }
 
-async function handleSelectionSaveWithComment(tabId) {
+async function handleSelectionSaveWithComment(tabId, selectionOverride = "") {
   const capture = await captureFromTab(tabId, "CAPTURE_SELECTION_WITH_COMMENT");
   if (!capture?.ok) {
     if (capture?.missingReceiver) {
@@ -460,12 +531,25 @@ async function handleSelectionSaveWithComment(tabId) {
       if (comment === null) {
         throw new Error("Comment cancelled");
       }
-      return handlePdfCapture(tabId, comment);
+      return handlePdfCapture(tabId, comment, selectionOverride);
     }
     throw new Error(capture?.error || "Failed to capture selection");
   }
   if (capture?.isPdf) {
-    return handlePdfCapture(tabId, capture.comment ?? "", capture.selectedText);
+    const fallbackSelection =
+      selectionOverride && selectionOverride.trim()
+        ? selectionOverride
+        : capture.selectedText && capture.selectedText.trim()
+          ? capture.selectedText
+          : await readSelectionFromPage(tabId);
+    let resolvedSelection = fallbackSelection;
+    if (!resolvedSelection) {
+      const copied = await copySelectionFromPage(tabId);
+      if (copied) {
+        resolvedSelection = await readClipboardTextViaOffscreen();
+      }
+    }
+    return handlePdfCapture(tabId, capture.comment ?? "", resolvedSelection);
   }
 
   const record = buildCaptureRecord({
@@ -504,7 +588,7 @@ async function handleYouTubeTranscriptSave(tabId) {
   return { fileName, record: savedRecord };
 }
 
-async function runAction(kind, tabId) {
+async function runAction(kind, tabId, selectionOverride = "") {
   let kindLabel = "selection";
   try {
     if (kind === MENU_SAVE_YOUTUBE_TRANSCRIPT) {
@@ -527,7 +611,7 @@ async function runAction(kind, tabId) {
     await notifyStart(tabId, kindLabel, forceNotification);
 
     if (kind === MENU_SAVE_SELECTION || kind === COMMAND_SAVE_SELECTION) {
-      const { fileName, record } = await handleSelectionSave(tabId);
+      const { fileName, record } = await handleSelectionSave(tabId, selectionOverride);
       await setBadge(tabId, "OK", "#2e7d32");
       chrome.notifications.clear(START_NOTIFICATION_ID).catch(() => undefined);
       await setLastCaptureStatus({ ok: true, kind: "selection", fileName });
@@ -538,7 +622,7 @@ async function runAction(kind, tabId) {
 
     if (kind === COMMAND_SAVE_SELECTION_WITH_COMMENT) {
       kindLabel = "selection_with_comment";
-      const { fileName, record } = await handleSelectionSaveWithComment(tabId);
+      const { fileName, record } = await handleSelectionSaveWithComment(tabId, selectionOverride);
       await setBadge(tabId, "OK", "#2e7d32");
       chrome.notifications.clear(START_NOTIFICATION_ID).catch(() => undefined);
       await setLastCaptureStatus({ ok: true, kind: "selection_with_comment", fileName });
@@ -549,7 +633,7 @@ async function runAction(kind, tabId) {
 
     if (kind === MENU_SAVE_WITH_COMMENT) {
       kindLabel = "selection_with_comment";
-      const { fileName, record } = await handleSelectionSaveWithComment(tabId);
+      const { fileName, record } = await handleSelectionSaveWithComment(tabId, selectionOverride);
       await setBadge(tabId, "OK", "#2e7d32");
       chrome.notifications.clear(START_NOTIFICATION_ID).catch(() => undefined);
       await setLastCaptureStatus({ ok: true, kind: "selection_with_comment", fileName });
@@ -614,12 +698,16 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   }
 
   if (info.menuItemId === MENU_SAVE_SELECTION) {
-    runAction(MENU_SAVE_SELECTION, tab.id).catch((error) => console.error(error));
+    runAction(MENU_SAVE_SELECTION, tab.id, info.selectionText || "").catch((error) =>
+      console.error(error)
+    );
     return;
   }
 
   if (info.menuItemId === MENU_SAVE_WITH_COMMENT) {
-    runAction(MENU_SAVE_WITH_COMMENT, tab.id).catch((error) => console.error(error));
+    runAction(MENU_SAVE_WITH_COMMENT, tab.id, info.selectionText || "").catch((error) =>
+      console.error(error)
+    );
     return;
   }
 
