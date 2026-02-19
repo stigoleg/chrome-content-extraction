@@ -534,32 +534,58 @@ function ensureCommentStyles() {
 
     .ccs-selection-bubble {
       position: fixed;
-      background: #0f172a;
-      color: #f8fafc;
+      background: linear-gradient(180deg, #111827, #0f172a);
+      color: #e2e8f0;
+      border: 1px solid rgba(148, 163, 184, 0.28);
       border-radius: 999px;
       padding: 6px 10px;
       display: flex;
-      gap: 8px;
+      gap: 6px;
       align-items: center;
-      box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28);
+      box-shadow: 0 12px 28px rgba(2, 6, 23, 0.34);
       font: 12px/1 "Segoe UI", Arial, sans-serif;
       z-index: 2147483646;
       transform: translate(-50%, -100%);
       pointer-events: auto;
+      backdrop-filter: blur(6px);
     }
 
-    .ccs-selection-bubble button {
-      border: 0;
+    .ccs-selection-bubble .ccs-selection-bubble__action {
+      border: 1px solid transparent;
       background: transparent;
       color: inherit;
       font: inherit;
+      font-weight: 600;
       cursor: pointer;
       padding: 4px 6px;
       border-radius: 999px;
+      letter-spacing: 0.1px;
+      transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
     }
 
-    .ccs-selection-bubble button:hover {
-      background: rgba(255, 255, 255, 0.12);
+    .ccs-selection-bubble .ccs-selection-bubble__action--primary {
+      background: rgba(56, 189, 248, 0.2);
+      border-color: rgba(56, 189, 248, 0.34);
+      color: #d9f2ff;
+    }
+
+    .ccs-selection-bubble .ccs-selection-bubble__action--primary:hover {
+      background: rgba(56, 189, 248, 0.32);
+    }
+
+    .ccs-selection-bubble .ccs-selection-bubble__action--secondary {
+      background: rgba(148, 163, 184, 0.12);
+      border-color: rgba(148, 163, 184, 0.28);
+    }
+
+    .ccs-selection-bubble .ccs-selection-bubble__action--secondary:hover {
+      background: rgba(148, 163, 184, 0.22);
+      color: #f8fafc;
+    }
+
+    .ccs-selection-bubble .ccs-selection-bubble__action:focus-visible {
+      outline: 2px solid rgba(56, 189, 248, 0.7);
+      outline-offset: 1px;
     }
   `;
   document.head?.appendChild(style);
@@ -646,10 +672,12 @@ function ensureSelectionBubble() {
 
   const addNoteButton = document.createElement("button");
   addNoteButton.type = "button";
+  addNoteButton.className = "ccs-selection-bubble__action ccs-selection-bubble__action--primary";
   addNoteButton.textContent = "Add highlight";
 
   const addCommentButton = document.createElement("button");
   addCommentButton.type = "button";
+  addCommentButton.className = "ccs-selection-bubble__action ccs-selection-bubble__action--secondary";
   addCommentButton.textContent = "Add highlight and note";
 
   bubble.append(addNoteButton, addCommentButton);

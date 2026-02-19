@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Context Capture Saver",
   "description": "Save page content and YouTube transcripts as JSON files or SQLite.",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "permissions": [
     "activeTab",
     "clipboardRead",

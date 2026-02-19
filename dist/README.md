@@ -1,95 +1,132 @@
-# Context Capture Saver (Chrome Extension)
+# Context Capture Saver
 
-This extension stores page content (selection optional) and YouTube transcript captures as JSON files or a SQLite database in a local folder you choose.
+Save web content, highlights, PDF text, and YouTube transcripts to your own local folder.
 
-## Features
+This extension is built for people who research online and want clean, structured captures they can keep, search, and process later.
 
-- Right-click page or selection -> **Save content**.
-- Right-click page or selection -> **Save with note**.
-- Right-click page or selection -> **Add highlight and note** (queue multiple highlights before saving).
-- Right-click selected text -> **Add highlight** (quick queue without note).
-- In-page highlights panel shows queued highlight count with a **Save** button.
-- Selection bubble appears above highlighted text for quick **Add highlight** or **Add highlight and note**.
-- Keyboard shortcuts:
-  - **Shift+Cmd+D** on macOS (**Ctrl+Shift+D** on other platforms) to save content.
-  - **Shift+Cmd+C** on macOS (**Ctrl+Shift+C** on other platforms) to save with a note.
-- On YouTube pages -> right-click page -> **Save YouTube transcript** or **Save transcript with note**.
-- Popup includes:
-  - quick capture buttons
-  - latest capture status (success/failure)
-  - one-click access to settings
-- Each JSON file includes:
-  - full page text snapshot (`documentText`)
-  - optional compressed document text (`documentTextCompressed`) for large captures
-  - annotations array (`annotations`) containing `selectedText`, `comment` (note), and `createdAt` per note
-  - title, URL
-  - `savedAt`
-  - `publishedAt` (best effort extraction)
-- Storage can optionally be grouped by date and/or capture type.
-- JSON folder grouping order is configurable (type → date by default).
-- Folder order selection appears only when both date and type grouping are enabled.
-- SQLite storage writes to `context-captures.sqlite` in the chosen folder.
-- Content is never truncated; large captures can be compressed instead.
-- Gzip compression is always available (built-in or bundled fallback).
-- Notes queued with **Add highlight and note** are stored in `annotations` and cleared after saving.
-- YouTube transcript storage mode is configurable:
-  - `documentText` only (default)
-  - `transcriptSegments` only (timestamped)
-  - both `documentText` and `transcriptSegments`
+## What You Can Do
 
-## Extraction Coverage
+- Save full page captures from normal websites.
+- Save with or without notes.
+- Queue multiple highlights before saving.
+- Capture YouTube transcripts (with optional timestamp segments).
+- Capture PDF text and metadata.
+- Store output as JSON files or in a local SQLite database.
 
-The extension tries to capture structured data from a wide range of sources:
+## Install
 
-- Web pages:
-  - selected text (optional)
-  - full page text (`documentText`)
-  - metadata fields when present:
-    - `description`, `author`, `keywords`
-    - canonical URL
-    - site name
-    - article tags (`article:tag`) and section (`article:section`)
-    - article published/modified time (`article:published_time`, `article:modified_time`)
-    - document content type and content language
-  - published date (best effort)
-- YouTube pages:
-  - transcript text and segmented timestamps when available
-  - video ID and transcript availability diagnostics
-  - page HTML is not stored; only transcript content is captured
-- PDFs:
-  - extracted PDF text (all pages)
-  - PDF metadata when available (title, author, subject, keywords, creator, producer)
-  - page count and file size
-  - annotations for highlights and notes (selection, comment, createdAt)
+### Option 1: Install from a release build (recommended)
 
-## Install (Load unpacked)
+1. Download `context-capture-saver.zip` from the latest GitHub release.
+2. Unzip it on your machine.
+3. Open `chrome://extensions`.
+4. Enable **Developer mode**.
+5. Click **Load unpacked** and select the unzipped folder.
 
-1. Open `chrome://extensions`.
-2. Enable **Developer mode**.
-3. Click **Load unpacked**.
-4. Select this project folder.
+### Option 2: Run from source
 
-## Configure Local Folder
+1. Clone this repository.
+2. Run:
 
-1. Open extension settings (Details -> Extension options).
-2. Click **Choose folder** and pick your destination folder.
-3. Optional: click **Test write** to confirm files are written.
-4. Optional: configure large content policy:
-   - max characters to store from page text
-   - enable/disable gzip compression for large documents
-   - choose compression threshold
+```bash
+npm ci
+npm run build
+```
 
-## Development checks
+3. Open `chrome://extensions`.
+4. Enable **Developer mode**.
+5. Click **Load unpacked** and select `dist/`.
 
-- Syntax check: `npm run check`
-- Unit tests: `npm test`
-- Build: `npm run build` (outputs an unpacked extension in `dist/`)
-- Build output also includes `dist/context-capture-saver.zip` for sharing or archival.
+## First-Time Setup
 
-## Notes
+1. Open extension options.
+2. Click **Choose folder** and select where captures should be stored.
+3. (Optional) Click **Test write** to confirm access.
+4. (Optional) Choose:
+   - JSON or SQLite storage
+   - compression behavior for large text
+   - folder organization by date/type
 
-- Chrome extensions cannot silently write to arbitrary paths; user folder selection is required.
-- YouTube transcript extraction reads transcript rows from the page UI. If transcript is unavailable, a JSON file is still saved with diagnostics.
-- `publishedAt` is heuristic and may be null on some pages.
-- Compression uses `CompressionStream` when available in the extension runtime.
-- On PDFs rendered by Chrome's built-in PDF viewer, inline bubble overlays may be unavailable due viewer frame restrictions. Use right-click selection actions as the stable fallback.
+## Usage
+
+### Website capture
+
+- Right-click page or selected text:
+  - **Save content**
+  - **Save with note**
+  - **Add highlight**
+  - **Add highlight and note**
+
+Highlights are queued and shown in the notes panel. Click **Save** to write one combined capture.
+
+### YouTube transcript capture
+
+On YouTube video pages:
+
+- **Save YouTube transcript**
+- **Save transcript with note**
+
+Transcript storage mode (in settings):
+
+- `documentText` only
+- `transcriptSegments` only
+- both
+
+### PDF capture
+
+- PDF text and metadata are extracted and saved.
+- For many PDFs, right-click highlight actions work reliably.
+- Chrome's native PDF viewer can block inline overlay injection, so the floating bubble menu may not appear in some PDF tabs.
+
+## Keyboard Shortcuts
+
+- macOS:
+  - `Shift + Command + D` save content
+  - `Shift + Command + C` save with note
+- Windows/Linux:
+  - `Ctrl + Shift + D` save content
+  - `Ctrl + Shift + C` save with note
+
+## Output Format
+
+Each capture includes:
+
+- source URL and title
+- capture timestamp (`savedAt`)
+- extracted content (`documentText` or `documentTextParts`)
+- annotations (`selectedText`, `comment`, `createdAt`) when present
+- diagnostics fields for traceability
+
+## Privacy
+
+- Data is saved to a local folder you explicitly choose.
+- No cloud sync is required.
+- The extension does not need an external backend service to store captures.
+
+## Troubleshooting
+
+- **No files saved**
+  - Re-open options and re-select your folder.
+  - Ensure folder permission is granted.
+- **YouTube transcript unavailable**
+  - Some videos do not expose transcript/caption data.
+  - Capture still saves diagnostics for debugging.
+- **PDF bubble menu missing**
+  - Use right-click highlight actions (`Add highlight`, `Add highlight and note`) as fallback in Chrome's built-in PDF viewer.
+
+## Development
+
+```bash
+npm ci
+npm run check
+npm run typecheck
+npm run test:ci
+npm run build
+```
+
+## CI/CD
+
+- CI runs syntax checks, type checks, tests, build, and dependency audit.
+- Release pipeline runs on tags like `v1.0.0` and publishes:
+  - `context-capture-saver.zip`
+  - SHA256 checksum
