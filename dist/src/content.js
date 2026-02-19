@@ -12,12 +12,56 @@ function isYouTubePage() {
   return Boolean(getYouTubeVideoId());
 }
 
+function looksLikePdfUrl(rawUrl, depth = 0) {
+  if (!rawUrl) {
+    return false;
+  }
+  if (depth > 3) {
+    return false;
+  }
+  try {
+    const parsed = new URL(rawUrl, window.location.href);
+    if (/\.pdf([?#]|$)/i.test(parsed.pathname)) {
+      return true;
+    }
+
+    const candidates = [
+      parsed.searchParams.get("file"),
+      parsed.searchParams.get("src"),
+      parsed.searchParams.get("url"),
+      parsed.searchParams.get("doc")
+    ].filter(Boolean);
+
+    for (const candidate of candidates) {
+      try {
+        if (looksLikePdfUrl(decodeURIComponent(candidate), depth + 1)) {
+          return true;
+        }
+      } catch (_error) {
+        if (looksLikePdfUrl(candidate, depth + 1)) {
+          return true;
+        }
+      }
+    }
+
+    return /\.pdf([?#]|$)/i.test(parsed.hash || "");
+  } catch (_error) {
+    return /\.pdf([?#]|$)/i.test(String(rawUrl));
+  }
+}
+
 function isPdfPage() {
   const type = (document.contentType || "").toLowerCase();
   if (type.includes("pdf")) {
     return true;
   }
-  return /\.pdf([?#]|$)/i.test(window.location.href);
+  if (looksLikePdfUrl(window.location.href)) {
+    return true;
+  }
+  const embeddedPdf = document.querySelector(
+    'embed[type*="pdf"], object[type*="pdf"], iframe[src*=".pdf"], iframe[src*="file="], iframe[src*="src="]'
+  );
+  return Boolean(embeddedPdf);
 }
 
 function getMetaByName(name) {
@@ -617,7 +661,10 @@ function ensureSelectionBubble() {
     let text = normalizeText(bubble.dataset.selectionText || "");
     if (!text && isPdfPage()) {
       try {
-        const response = await chrome.runtime.sendMessage({ type: "RESOLVE_PDF_SELECTION" });
+        const response = await chrome.runtime.sendMessage({
+          type: "RESOLVE_PDF_SELECTION",
+          allowClipboardCopy: true
+        });
         if (response?.ok) {
           text = normalizeText(response.selectedText || "");
           if (text) {
@@ -655,7 +702,10 @@ function ensureSelectionBubble() {
     let text = normalizeText(bubble.dataset.selectionText || "");
     if (!text && isPdfPage()) {
       try {
-        const response = await chrome.runtime.sendMessage({ type: "RESOLVE_PDF_SELECTION" });
+        const response = await chrome.runtime.sendMessage({
+          type: "RESOLVE_PDF_SELECTION",
+          allowClipboardCopy: true
+        });
         if (response?.ok) {
           text = normalizeText(response.selectedText || "");
           if (text) {
@@ -704,7 +754,10 @@ function hideSelectionBubble() {
 
 let selectionBubbleTimer = null;
 const lastPointerPosition = { x: 0, y: 0, has: false };
-const lastClipboardSelection = { text: "", at: 0 };
+let pdfResolveInFlight = false;
+let pdfResolveQueued = false;
+let pdfSelectionPollTimer = null;
+let pdfEmptyBubbleTimer = null;
 
 function positionPdfBubble(bubble) {
   const left = lastPointerPosition.has
@@ -717,31 +770,110 @@ function positionPdfBubble(bubble) {
   bubble.style.top = `${top}px`;
 }
 
-function showPdfSelectionBubble(selectionText = "") {
-  const bubble = ensureSelectionBubble();
-  bubble.dataset.selectionText = normalizeText(selectionText || "");
-  positionPdfBubble(bubble);
+function clearPdfEmptyBubbleTimer() {
+  if (pdfEmptyBubbleTimer) {
+    window.clearTimeout(pdfEmptyBubbleTimer);
+    pdfEmptyBubbleTimer = null;
+  }
 }
 
-async function getClipboardSelection() {
-  try {
-    const copied = document.execCommand("copy");
-    if (!copied) {
-      return "";
-    }
-    if (navigator.clipboard?.readText) {
-      const text = await navigator.clipboard.readText();
-      return normalizeText(text || "");
-    }
-  } catch (_error) {
+function showPdfSelectionBubble(selectionText = "", options = {}) {
+  const bubble = ensureSelectionBubble();
+  const normalized = normalizeText(selectionText || "");
+  bubble.dataset.selectionText = normalized;
+  positionPdfBubble(bubble);
+  clearPdfEmptyBubbleTimer();
+  if (!normalized && options.ephemeral) {
+    pdfEmptyBubbleTimer = window.setTimeout(() => {
+      const currentBubble = document.getElementById(SELECTION_BUBBLE_ID);
+      if (!currentBubble) {
+        return;
+      }
+      const currentText = normalizeText(currentBubble.dataset.selectionText || "");
+      if (!currentText) {
+        hideSelectionBubble();
+      }
+    }, 1100);
+  }
+}
+
+async function resolvePdfSelectionForBubble(options = {}) {
+  if (!isPdfPage()) {
     return "";
   }
-  return "";
+
+  if (pdfResolveInFlight) {
+    pdfResolveQueued = true;
+    return "";
+  }
+
+  pdfResolveInFlight = true;
+  try {
+    let text = normalizeText(window.getSelection()?.toString() || "");
+    if (!text) {
+      const response = await chrome.runtime.sendMessage({
+        type: "RESOLVE_PDF_SELECTION",
+        allowClipboardCopy: options.allowClipboardCopy === true
+      });
+      if (response?.ok) {
+        text = normalizeText(response.selectedText || "");
+      }
+    }
+
+    if (text) {
+      showPdfSelectionBubble(text);
+      return text;
+    }
+
+    if (options.allowEmptyBubble) {
+      showPdfSelectionBubble("", { ephemeral: true });
+      return "";
+    }
+
+    const bubble = document.getElementById(SELECTION_BUBBLE_ID);
+    if (bubble && !normalizeText(bubble.dataset.selectionText || "")) {
+      hideSelectionBubble();
+    }
+    return "";
+  } catch (_error) {
+    return "";
+  } finally {
+    pdfResolveInFlight = false;
+    if (pdfResolveQueued) {
+      pdfResolveQueued = false;
+      void resolvePdfSelectionForBubble({ allowClipboardCopy: false, allowEmptyBubble: false });
+    }
+  }
+}
+
+function ensurePdfSelectionPoller() {
+  if (!isPdfPage() || pdfSelectionPollTimer) {
+    return;
+  }
+  pdfSelectionPollTimer = window.setInterval(() => {
+    if (!isPdfPage()) {
+      stopPdfSelectionPoller();
+      return;
+    }
+    if (document.hidden) {
+      return;
+    }
+    void resolvePdfSelectionForBubble({ allowClipboardCopy: false, allowEmptyBubble: false });
+  }, 1400);
+}
+
+function stopPdfSelectionPoller() {
+  if (!pdfSelectionPollTimer) {
+    return;
+  }
+  window.clearInterval(pdfSelectionPollTimer);
+  pdfSelectionPollTimer = null;
 }
 
 function scheduleSelectionBubbleUpdate() {
   if (isYouTubePage()) {
     hideSelectionBubble();
+    stopPdfSelectionPoller();
     return;
   }
   if (selectionBubbleTimer) {
@@ -750,14 +882,15 @@ function scheduleSelectionBubbleUpdate() {
 
   selectionBubbleTimer = window.setTimeout(() => {
     void (async () => {
+    if (isPdfPage()) {
+      ensurePdfSelectionPoller();
+      await resolvePdfSelectionForBubble({ allowClipboardCopy: false, allowEmptyBubble: false });
+      return;
+    }
+
+    stopPdfSelectionPoller();
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed) {
-      if (isPdfPage()) {
-        const clipboardText =
-          Date.now() - lastClipboardSelection.at < 1500 ? lastClipboardSelection.text : "";
-        showPdfSelectionBubble(clipboardText);
-        return;
-      }
       hideSelectionBubble();
       return;
     }
@@ -775,12 +908,6 @@ function scheduleSelectionBubbleUpdate() {
     }
     const text = normalizeText(selection.toString() || "");
     if (!text) {
-      if (isPdfPage()) {
-        const clipboardText =
-          Date.now() - lastClipboardSelection.at < 1500 ? lastClipboardSelection.text : "";
-        showPdfSelectionBubble(clipboardText);
-        return;
-      }
       hideSelectionBubble();
       return;
     }
@@ -885,9 +1012,7 @@ function requestComment() {
 function captureSelection() {
   const selection = normalizeText(window.getSelection()?.toString() || "");
   const page = getPageMetadata();
-  const isPdf =
-    (document.contentType || "").toLowerCase().includes("pdf") ||
-    /\.pdf([?#]|$)/i.test(window.location.href);
+  const isPdf = isPdfPage();
   return {
     ok: true,
     type: "selected_text",
@@ -913,18 +1038,28 @@ async function handleSelectionPointerEvent(event) {
   lastPointerPosition.y = event.clientY;
   lastPointerPosition.has = true;
   if (isPdfPage()) {
-    const clipboardText = await getClipboardSelection();
-    if (clipboardText) {
-      lastClipboardSelection.text = clipboardText;
-      lastClipboardSelection.at = Date.now();
-    }
+    ensurePdfSelectionPoller();
+    await resolvePdfSelectionForBubble({ allowClipboardCopy: false, allowEmptyBubble: true });
+    return;
   }
   scheduleSelectionBubbleUpdate();
 }
 
 document.addEventListener("mouseup", handleSelectionPointerEvent);
 window.addEventListener("mouseup", handleSelectionPointerEvent, true);
+document.addEventListener("pointerup", handleSelectionPointerEvent, true);
+window.addEventListener("pointerup", handleSelectionPointerEvent, true);
 document.addEventListener("keyup", scheduleSelectionBubbleUpdate);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    hideSelectionBubble();
+    return;
+  }
+  if (isPdfPage()) {
+    ensurePdfSelectionPoller();
+    void resolvePdfSelectionForBubble({ allowClipboardCopy: false, allowEmptyBubble: false });
+  }
+});
 window.addEventListener(
   "scroll",
   () => {
@@ -932,6 +1067,10 @@ window.addEventListener(
   },
   true
 );
+
+if (isPdfPage()) {
+  ensurePdfSelectionPoller();
+}
 
 function getYouTubeVideoId() {
   try {

@@ -352,21 +352,17 @@ async function readSelectionFromPage(tabId) {
   return "";
 }
 
-async function readSelectionWithClipboard(tabId) {
+async function readClipboardTextFromPage(tabId) {
   try {
     const results = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       func: async () => {
-        const direct = window.getSelection()?.toString() || "";
-        if (direct && direct.trim()) {
-          return direct.trim();
-        }
         try {
-          const copied = document.execCommand("copy");
-          if (copied && navigator.clipboard?.readText) {
-            const text = await navigator.clipboard.readText();
-            return String(text || "").trim();
+          if (!navigator.clipboard?.readText) {
+            return "";
           }
+          const text = await navigator.clipboard.readText();
+          return String(text || "").trim();
         } catch (_error) {
           return "";
         }
@@ -388,25 +384,32 @@ async function readSelectionWithClipboard(tabId) {
   return "";
 }
 
-async function resolveSelection(tabId, selectionOverride = "") {
+async function resolveSelection(tabId, selectionOverride = "", options = {}) {
   const trimmedOverride = selectionOverride.trim();
   if (trimmedOverride) {
     return trimmedOverride;
   }
+
+  const allowClipboardRead = options.allowClipboardRead === true;
+  const allowClipboardCopy = options.allowClipboardCopy !== false;
 
   const fromPage = await readSelectionFromPage(tabId);
   if (fromPage) {
     return fromPage;
   }
 
-  const fromClipboard = await readSelectionWithClipboard(tabId);
-  if (fromClipboard) {
-    return fromClipboard;
+  if (allowClipboardRead) {
+    const fromClipboard = await readClipboardTextFromPage(tabId);
+    if (fromClipboard) {
+      return fromClipboard;
+    }
   }
 
-  const copied = await copySelectionFromPage(tabId);
-  if (copied) {
-    return await readClipboardTextViaOffscreen();
+  if (allowClipboardCopy) {
+    const copied = await copySelectionFromPage(tabId);
+    if (copied) {
+      return await readClipboardTextViaOffscreen();
+    }
   }
 
   return "";
@@ -1554,7 +1557,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
 
-    resolveSelection(tabId, "")
+    resolveSelection(tabId, "", {
+      allowClipboardRead: false,
+      allowClipboardCopy: message.allowClipboardCopy === true
+    })
       .then((selectedText) => {
         sendResponse({ ok: true, selectedText: selectedText || "" });
       })
