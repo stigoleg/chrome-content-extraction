@@ -11,6 +11,7 @@ import {
 
 const MENU_SAVE_SELECTION = "save-selection";
 const MENU_SAVE_WITH_COMMENT = "save-with-comment";
+const MENU_ADD_HIGHLIGHT = "add-highlight";
 const MENU_ADD_NOTE = "add-note";
 const MENU_SAVE_YOUTUBE_TRANSCRIPT = "save-youtube-transcript";
 const MENU_SAVE_YOUTUBE_TRANSCRIPT_WITH_COMMENT = "save-youtube-transcript-with-comment";
@@ -39,9 +40,15 @@ async function createMenus() {
   });
 
   chrome.contextMenus.create({
+    id: MENU_ADD_HIGHLIGHT,
+    title: "Add highlight",
+    contexts: ["selection"]
+  });
+
+  chrome.contextMenus.create({
     id: MENU_ADD_NOTE,
     title: "Add highlight and note",
-    contexts: ["all"]
+    contexts: ["selection"]
   });
 
   chrome.contextMenus.create({
@@ -599,27 +606,41 @@ async function clearNotesPanel(tabId) {
   await chrome.tabs.sendMessage(tabId, { type: "CLEAR_PENDING_NOTES" }).catch(() => undefined);
 }
 
+async function handleAddHighlight(tabId, selectionOverride = "") {
+  const selection = await resolveSelection(tabId, selectionOverride);
+  const count = await queueAnnotation(tabId, selection, "");
+  if (count > 0) {
+    await notifyInfo(
+      tabId,
+      "Highlight added",
+      `${count} highlight${count === 1 ? "" : "s"} queued.`
+    );
+  } else {
+    await notifyInfo(tabId, "No selection", "Select text to add a highlight.");
+  }
+}
+
 async function handleAddNote(tabId, selectionOverride = "") {
   const capture = await captureFromTab(tabId, "CAPTURE_SELECTION_WITH_COMMENT");
-    if (!capture?.ok) {
-  if (capture?.missingReceiver) {
-    const comment = await requestCommentFromExtension();
-    if (comment === null) {
+  if (!capture?.ok) {
+    if (capture?.missingReceiver) {
+      const comment = await requestCommentFromExtension();
+      if (comment === null) {
+        return;
+      }
+      const selection = await resolveSelection(tabId, selectionOverride);
+      const count = await queueAnnotation(tabId, selection, comment);
+      if (count > 0) {
+        await notifyInfo(
+          tabId,
+          "Highlight added",
+          `${count} highlight${count === 1 ? "" : "s"} queued.`
+        );
+      } else {
+        await notifyInfo(tabId, "No selection", "Select text to add a highlight.");
+      }
       return;
     }
-    const selection = await resolveSelection(tabId, selectionOverride);
-    const count = await queueAnnotation(tabId, selection, comment);
-    if (count > 0) {
-      await notifyInfo(
-        tabId,
-        "Highlight added",
-        `${count} highlight${count === 1 ? "" : "s"} queued.`
-      );
-    } else {
-      await notifyInfo(tabId, "No selection", "Select text to add a highlight.");
-    }
-    return;
-  }
     throw new Error(capture?.error || "Failed to capture selection");
   }
 
@@ -891,40 +912,71 @@ async function requestCommentFromExtension() {
   });
 }
 
-function isLikelyPdfUrl(url) {
-  try {
-    const parsed = new URL(url);
-    return parsed.pathname.toLowerCase().endsWith(".pdf");
-  } catch (_error) {
-    return false;
-  }
-}
-
-function resolvePdfUrl(rawUrl) {
-  if (!rawUrl) {
+function resolveNestedUrlCandidate(value, baseUrl) {
+  if (!value) {
     return null;
   }
 
   try {
-    const parsed = new URL(rawUrl);
-    const fileParam = parsed.searchParams.get("file");
-    if (fileParam) {
-      try {
-        return new URL(fileParam).toString();
-      } catch (_error) {
-        try {
-          const decoded = decodeURIComponent(fileParam);
-          return encodeURI(decoded);
-        } catch (_err) {
-          return fileParam;
-        }
-      }
-    }
+    return new URL(value, baseUrl).toString();
   } catch (_error) {
+    return null;
+  }
+}
+
+function resolvePdfUrl(rawUrl, depth = 0) {
+  if (!rawUrl) {
+    return null;
+  }
+  if (depth > 3) {
     return rawUrl;
   }
 
-  return rawUrl;
+  try {
+    const parsed = new URL(rawUrl);
+    const params = ["file", "src", "url", "doc"];
+    for (const key of params) {
+      const paramValue = parsed.searchParams.get(key);
+      if (!paramValue) {
+        continue;
+      }
+
+      const nestedCandidates = [paramValue];
+      try {
+        const decoded = decodeURIComponent(paramValue);
+        if (decoded && decoded !== paramValue) {
+          nestedCandidates.push(decoded);
+        }
+      } catch (_error) {
+        // Ignore malformed encodings.
+      }
+
+      for (const nested of nestedCandidates) {
+        const resolved = resolveNestedUrlCandidate(nested, parsed.toString());
+        if (!resolved) {
+          continue;
+        }
+        return resolvePdfUrl(resolved, depth + 1);
+      }
+    }
+
+    return parsed.toString();
+  } catch (_error) {
+    return rawUrl;
+  }
+}
+
+function isLikelyPdfUrl(url) {
+  const resolved = resolvePdfUrl(url) || url || "";
+  try {
+    const parsed = new URL(resolved);
+    if (parsed.pathname.toLowerCase().endsWith(".pdf")) {
+      return true;
+    }
+    return /\.pdf([?#]|$)/i.test(parsed.search || "") || /\.pdf([?#]|$)/i.test(parsed.hash || "");
+  } catch (_error) {
+    return /\.pdf([?#]|$)/i.test(String(resolved));
+  }
 }
 
 async function updateMenusForUrl(url) {
@@ -932,6 +984,7 @@ async function updateMenusForUrl(url) {
   await Promise.all([
     chrome.contextMenus.update(MENU_SAVE_SELECTION, { visible: !isYouTube }),
     chrome.contextMenus.update(MENU_SAVE_WITH_COMMENT, { visible: !isYouTube }),
+    chrome.contextMenus.update(MENU_ADD_HIGHLIGHT, { visible: !isYouTube }),
     chrome.contextMenus.update(MENU_ADD_NOTE, { visible: !isYouTube }),
     chrome.contextMenus.update(MENU_SAVE_YOUTUBE_TRANSCRIPT, { visible: isYouTube }),
     chrome.contextMenus.update(MENU_SAVE_YOUTUBE_TRANSCRIPT_WITH_COMMENT, { visible: isYouTube })
@@ -1441,6 +1494,12 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     runAction(MENU_SAVE_YOUTUBE_TRANSCRIPT_WITH_COMMENT, tab.id).catch((error) =>
       console.error(error)
     );
+    return;
+  }
+
+  if (info.menuItemId === MENU_ADD_HIGHLIGHT) {
+    const selectionOverride = info.selectionText || "";
+    handleAddHighlight(tab.id, selectionOverride).catch((error) => console.error(error));
     return;
   }
 

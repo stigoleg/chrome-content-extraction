@@ -7,6 +7,7 @@ This extension stores page content (selection optional) and YouTube transcript c
 - Right-click page or selection -> **Save content**.
 - Right-click page or selection -> **Save with note**.
 - Right-click page or selection -> **Add highlight and note** (queue multiple highlights before saving).
+- Right-click selected text -> **Add highlight** (quick queue without note).
 - In-page highlights panel shows queued highlight count with a **Save** button.
 - Selection bubble appears above highlighted text for quick **Add highlight** or **Add highlight and note**.
 - Keyboard shortcuts:
@@ -91,3 +92,4 @@ The extension tries to capture structured data from a wide range of sources:
 - YouTube transcript extraction reads transcript rows from the page UI. If transcript is unavailable, a JSON file is still saved with diagnostics.
 - `publishedAt` is heuristic and may be null on some pages.
 - Compression uses `CompressionStream` when available in the extension runtime.
+- On PDFs rendered by Chrome's built-in PDF viewer, inline bubble overlays may be unavailable due viewer frame restrictions. Use right-click selection actions as the stable fallback.
