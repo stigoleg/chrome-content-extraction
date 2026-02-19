@@ -68,8 +68,35 @@ function isYouTubeUrl(rawUrl) {
     return false;
   }
   try {
-    const { hostname } = new URL(rawUrl);
-    return hostname === "youtube.com" || hostname.endsWith(".youtube.com") || hostname === "youtu.be";
+    const url = new URL(rawUrl);
+    const hostname = url.hostname.toLowerCase();
+
+    if (hostname === "youtu.be") {
+      const shortId = url.pathname.split("/").filter(Boolean)[0] || "";
+      return Boolean(shortId);
+    }
+
+    if (!(hostname === "youtube.com" || hostname.endsWith(".youtube.com"))) {
+      return false;
+    }
+
+    if (url.pathname === "/watch") {
+      return Boolean(url.searchParams.get("v"));
+    }
+
+    if (url.pathname.startsWith("/shorts/")) {
+      return Boolean(url.pathname.split("/")[2]);
+    }
+
+    if (url.pathname.startsWith("/live/")) {
+      return Boolean(url.pathname.split("/")[2]);
+    }
+
+    if (url.pathname.startsWith("/embed/")) {
+      return Boolean(url.pathname.split("/")[2]);
+    }
+
+    return false;
   } catch (_error) {
     return false;
   }
@@ -88,12 +115,15 @@ async function setBadge(tabId, text, color) {
   }, 1800);
 }
 
-async function captureFromTab(tabId, messageType) {
+async function captureFromTab(tabId, messageType, options = {}) {
   if (!tabId) {
     throw new Error("No active tab");
   }
 
   try {
+    if (typeof options.frameId === "number") {
+      return await chrome.tabs.sendMessage(tabId, { type: messageType }, { frameId: options.frameId });
+    }
     return await chrome.tabs.sendMessage(tabId, { type: messageType });
   } catch (error) {
     return {
@@ -101,6 +131,202 @@ async function captureFromTab(tabId, messageType) {
       error: error?.message || "No content script available",
       missingReceiver: true
     };
+  }
+}
+
+async function captureYouTubeTranscriptFromMainWorld(tabId) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      func: async () => {
+        const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const normalizeText = (value) =>
+          String(value || "")
+            .replace(/\s+\n/g, "\n")
+            .replace(/\n{3,}/g, "\n\n")
+            .trim();
+        const normalizeTimestamp = (value) => {
+          const normalized = String(value || "").replace(/\s+/g, " ").trim();
+          return normalized || null;
+        };
+        const segmentKey = (segment) => `${segment.timestamp || ""}\u241f${segment.text}`;
+        const collapseRepeatedSequence = (segments) => {
+          if (!Array.isArray(segments) || segments.length < 2) {
+            return Array.isArray(segments) ? segments : [];
+          }
+          const keys = segments.map(segmentKey);
+          const length = keys.length;
+          const repeats = [2, 3, 4];
+          for (const repeat of repeats) {
+            if (length % repeat !== 0) {
+              continue;
+            }
+            const chunkLength = length / repeat;
+            let repeated = true;
+            for (let i = chunkLength; i < length; i += 1) {
+              if (keys[i] !== keys[i % chunkLength]) {
+                repeated = false;
+                break;
+              }
+            }
+            if (repeated) {
+              return segments.slice(0, chunkLength);
+            }
+          }
+          return segments;
+        };
+        const normalizeSegments = (segments) => {
+          if (!Array.isArray(segments) || segments.length === 0) {
+            return [];
+          }
+
+          const normalized = segments
+            .map((segment) => {
+              const text = normalizeText(segment?.text || "");
+              if (!text) {
+                return null;
+              }
+              return {
+                timestamp: normalizeTimestamp(segment?.timestamp),
+                text
+              };
+            })
+            .filter(Boolean);
+
+          const adjacentDeduped = [];
+          let previousKey = null;
+          for (const segment of normalized) {
+            const key = segmentKey(segment);
+            if (key === previousKey) {
+              continue;
+            }
+            adjacentDeduped.push(segment);
+            previousKey = key;
+          }
+
+          return collapseRepeatedSequence(adjacentDeduped);
+        };
+        const getTranscriptRows = () => {
+          const panelId = "engagement-panel-searchable-transcript";
+          const scopedPanels = Array.from(
+            document.querySelectorAll(
+              `ytd-engagement-panel-section-list-renderer[target-id="${panelId}"], ` +
+                `ytd-engagement-panel-section-list-renderer[panel-identifier="${panelId}"]`
+            )
+          );
+          const scopedRows = scopedPanels.flatMap((panel) =>
+            Array.from(panel.querySelectorAll("ytd-transcript-segment-renderer"))
+          );
+          if (scopedRows.length > 0) {
+            return scopedRows;
+          }
+          return Array.from(document.querySelectorAll("ytd-transcript-segment-renderer"));
+        };
+        const readSegments = () =>
+          normalizeSegments(
+            getTranscriptRows()
+              .map((row) => {
+                const timestamp =
+                  row.querySelector(".segment-timestamp")?.textContent?.trim() ||
+                  row.querySelector("#segment-timestamp")?.textContent?.trim() ||
+                  row.querySelector("yt-formatted-string.segment-timestamp")?.textContent?.trim() ||
+                  null;
+
+                const text =
+                  row.querySelector(".segment-text")?.textContent?.trim() ||
+                  row.querySelector("#segment-text")?.textContent?.trim() ||
+                  row.querySelector("yt-formatted-string.segment-text")?.textContent?.trim() ||
+                  null;
+
+                if (!text) {
+                  return null;
+                }
+                return { timestamp, text };
+              })
+              .filter(Boolean)
+          );
+        const waitForRows = async (maxAttempts = 24, delayMs = 250) => {
+          for (let i = 0; i < maxAttempts; i += 1) {
+            if (readSegments().length > 0) {
+              return true;
+            }
+            await sleep(delayMs);
+          }
+          return false;
+        };
+
+        let opened = false;
+        let segments = readSegments();
+        if (segments.length === 0) {
+          const openCommand = {
+            changeEngagementPanelVisibilityAction: {
+              targetId: "engagement-panel-searchable-transcript",
+              visibility: "ENGAGEMENT_PANEL_VISIBILITY_EXPANDED"
+            }
+          };
+          const hosts = [
+            document.querySelector("ytd-watch-flexy"),
+            document.querySelector("ytd-app"),
+            document.querySelector("ytd-page-manager")
+          ];
+          for (const host of hosts) {
+            const anyHost = /** @type {any} */ (host);
+            if (!anyHost) {
+              continue;
+            }
+            try {
+              if (typeof anyHost.resolveCommand === "function") {
+                anyHost.resolveCommand(openCommand);
+                opened = true;
+                break;
+              }
+              if (typeof anyHost.handleCommand === "function") {
+                anyHost.handleCommand(openCommand);
+                opened = true;
+                break;
+              }
+            } catch (_error) {
+              continue;
+            }
+          }
+          if (opened) {
+            await waitForRows();
+            segments = readSegments();
+          }
+        }
+
+        if (segments.length === 0) {
+          const candidates = Array.from(
+            document.querySelectorAll(
+              "button, tp-yt-paper-item, ytd-button-renderer, ytd-menu-service-item-renderer"
+            )
+          );
+          const transcriptButton = candidates.find((el) =>
+            /(transcript|transkrips|transkrip|caption|subtit)/i.test(el.textContent || "")
+          );
+          if (transcriptButton) {
+            /** @type {HTMLElement} */ (transcriptButton).click();
+            opened = true;
+            await waitForRows();
+            segments = readSegments();
+          }
+        }
+
+        return {
+          ok: true,
+          source: "main_world_dom",
+          opened,
+          segmentCount: segments.length,
+          transcriptText: segments.map((segment) => normalizeText(segment.text)).join("\n"),
+          segments
+        };
+      }
+    });
+
+    return Array.isArray(results) ? results[0]?.result || null : null;
+  } catch (_error) {
+    return null;
   }
 }
 
@@ -222,6 +448,104 @@ function buildAnnotations(pendingAnnotations, selectedText, comment) {
     combined.push(extra);
   }
   return combined.length ? combined : null;
+}
+
+function normalizeTranscriptStorageMode(value) {
+  if (value === "segments" || value === "both") {
+    return value;
+  }
+  return "document_text";
+}
+
+function normalizeTranscriptTimestamp(value) {
+  const normalized = String(value || "").replace(/\s+/g, " ").trim();
+  return normalized || null;
+}
+
+function normalizeTranscriptLine(value) {
+  return String(value || "").replace(/\s+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function transcriptSegmentKey(segment) {
+  return `${segment.timestamp || ""}\u241f${segment.text}`;
+}
+
+function collapseRepeatedTranscriptSequence(segments) {
+  if (!Array.isArray(segments) || segments.length < 2) {
+    return Array.isArray(segments) ? segments : [];
+  }
+
+  const keys = segments.map(transcriptSegmentKey);
+  const length = keys.length;
+  const candidateRepeats = [2, 3, 4];
+
+  for (const repeat of candidateRepeats) {
+    if (length % repeat !== 0) {
+      continue;
+    }
+    const chunkLength = length / repeat;
+    let repeated = true;
+    for (let i = chunkLength; i < length; i += 1) {
+      if (keys[i] !== keys[i % chunkLength]) {
+        repeated = false;
+        break;
+      }
+    }
+    if (repeated) {
+      return segments.slice(0, chunkLength);
+    }
+  }
+
+  return segments;
+}
+
+function normalizeTranscriptSegmentsForStorage(segments) {
+  if (!Array.isArray(segments) || segments.length === 0) {
+    return [];
+  }
+
+  const normalized = segments
+    .map((segment) => {
+      const text = normalizeTranscriptLine(segment?.text || "");
+      if (!text) {
+        return null;
+      }
+      return {
+        timestamp: normalizeTranscriptTimestamp(segment?.timestamp),
+        text
+      };
+    })
+    .filter(Boolean);
+
+  const adjacentDeduped = [];
+  let previousKey = null;
+  for (const segment of normalized) {
+    const key = transcriptSegmentKey(segment);
+    if (key === previousKey) {
+      continue;
+    }
+    adjacentDeduped.push(segment);
+    previousKey = key;
+  }
+
+  return collapseRepeatedTranscriptSequence(adjacentDeduped);
+}
+
+function buildYouTubeTranscriptContent(capture, annotations, modeInput) {
+  const mode = normalizeTranscriptStorageMode(modeInput);
+  const transcriptSegments = normalizeTranscriptSegmentsForStorage(capture?.transcriptSegments);
+  const transcriptTextFromSegments = transcriptSegments.map((segment) => segment.text).join("\n");
+  const transcriptTextRaw = capture?.documentText ?? capture?.transcriptText ?? "";
+  const transcriptText = transcriptSegments.length
+    ? transcriptTextFromSegments
+    : normalizeTranscriptLine(transcriptTextRaw);
+
+  return {
+    documentText: mode === "segments" ? "" : transcriptText,
+    transcriptText: null,
+    transcriptSegments: mode === "document_text" ? [] : transcriptSegments,
+    annotations
+  };
 }
 
 async function queueAnnotation(tabId, selectedText, comment) {
@@ -845,26 +1169,81 @@ async function handleSelectionSaveWithComment(tabId, selectionOverride = "") {
 }
 
 async function handleYouTubeTranscriptSave(tabId, withComment = false) {
-  const capture = await captureFromTab(
+  const settings = await getSettings();
+  const transcriptStorageMode = normalizeTranscriptStorageMode(
+    settings.youtubeTranscriptStorageMode
+  );
+
+  let capture = await captureFromTab(
     tabId,
-    withComment ? "CAPTURE_YOUTUBE_TRANSCRIPT_WITH_COMMENT" : "CAPTURE_YOUTUBE_TRANSCRIPT"
+    withComment ? "CAPTURE_YOUTUBE_TRANSCRIPT_WITH_COMMENT" : "CAPTURE_YOUTUBE_TRANSCRIPT",
+    { frameId: 0 }
   );
   if (!capture?.ok) {
     throw new Error(capture?.error || "Failed to capture YouTube transcript");
   }
 
+  const hasSegments =
+    Array.isArray(capture.transcriptSegments) && capture.transcriptSegments.length > 0;
+  if (!hasSegments) {
+    const fallback = await captureYouTubeTranscriptFromMainWorld(tabId);
+    if (fallback?.ok && Array.isArray(fallback.segments) && fallback.segments.length > 0) {
+      const missingFields = Array.isArray(capture?.diagnostics?.missingFields)
+        ? capture.diagnostics.missingFields.filter((field) => field !== "transcript")
+        : [];
+
+      capture = {
+        ...capture,
+        documentText: fallback.transcriptText || capture.documentText || "",
+        transcriptText: fallback.transcriptText || capture.transcriptText || null,
+        transcriptSegments: fallback.segments,
+        source: {
+          ...(capture.source || {}),
+          metadata: {
+            ...(capture.source?.metadata || {}),
+            transcriptStatus: "transcript_available",
+            transcriptSource: fallback.source || "main_world_dom"
+          }
+        },
+        diagnostics: {
+          ...(capture.diagnostics || {}),
+          missingFields,
+          transcriptSource: fallback.source || "main_world_dom",
+          transcriptOpenedByExtension:
+            Boolean(capture.diagnostics?.transcriptOpenedByExtension) || Boolean(fallback.opened),
+          mainWorldFallbackUsed: true,
+          mainWorldFallbackSegmentCount: fallback.segmentCount || 0,
+          reason: null
+        }
+      };
+    } else {
+      capture = {
+        ...capture,
+        diagnostics: {
+          ...(capture.diagnostics || {}),
+          mainWorldFallbackUsed: true,
+          mainWorldFallbackSegmentCount: fallback?.segmentCount || 0
+        }
+      };
+    }
+  }
+
   const pendingAnnotations = takePendingAnnotations(tabId);
   const comment = withComment ? capture.comment ?? "" : "";
+  const annotations = buildAnnotations(pendingAnnotations, "", comment);
+  const content = buildYouTubeTranscriptContent(capture, annotations, transcriptStorageMode);
   const record = buildCaptureRecord({
     captureType: "youtube_transcript",
     source: capture.source,
-    content: {
-      documentText: capture.documentText ?? capture.transcriptText ?? "",
-      transcriptText: capture.transcriptText,
-      transcriptSegments: capture.transcriptSegments,
-      annotations: buildAnnotations(pendingAnnotations, "", comment)
-    },
-    diagnostics: capture.diagnostics
+    content,
+    diagnostics: {
+      ...(capture.diagnostics || {}),
+      transcriptStorageMode,
+      persistedDocumentTextLength: (content.documentText || "").length,
+      persistedTranscriptSegmentCount: Array.isArray(content.transcriptSegments)
+        ? content.transcriptSegments.length
+        : 0
+    }
   });
 
   const { fileName, record: savedRecord } = await saveRecord(record);
@@ -1134,6 +1513,36 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       })
       .catch((error) => {
         sendResponse({ ok: false, error: error?.message || "Failed to read player response" });
+      });
+    return true;
+  }
+
+  if (message?.type === "YT_FETCH_TEXT") {
+    fetch(message.url, { credentials: "include" })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`Fetch failed (${response.status})`);
+        }
+        const text = await response.text();
+        sendResponse({ ok: true, text });
+      })
+      .catch((error) => {
+        sendResponse({ ok: false, error: error?.message || "Fetch failed" });
+      });
+    return true;
+  }
+
+  if (message?.type === "YT_FETCH_JSON") {
+    fetch(message.url, { credentials: "include" })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`Fetch failed (${response.status})`);
+        }
+        const json = await response.json();
+        sendResponse({ ok: true, json });
+      })
+      .catch((error) => {
+        sendResponse({ ok: false, error: error?.message || "Fetch failed" });
       });
     return true;
   }

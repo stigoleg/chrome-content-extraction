@@ -42,8 +42,35 @@ function isYouTubeUrl(rawUrl) {
     return false;
   }
   try {
-    const { hostname } = new URL(rawUrl);
-    return hostname === "youtube.com" || hostname.endsWith(".youtube.com") || hostname === "youtu.be";
+    const url = new URL(rawUrl);
+    const hostname = url.hostname.toLowerCase();
+
+    if (hostname === "youtu.be") {
+      const shortId = url.pathname.split("/").filter(Boolean)[0] || "";
+      return Boolean(shortId);
+    }
+
+    if (!(hostname === "youtube.com" || hostname.endsWith(".youtube.com"))) {
+      return false;
+    }
+
+    if (url.pathname === "/watch") {
+      return Boolean(url.searchParams.get("v"));
+    }
+
+    if (url.pathname.startsWith("/shorts/")) {
+      return Boolean(url.pathname.split("/")[2]);
+    }
+
+    if (url.pathname.startsWith("/live/")) {
+      return Boolean(url.pathname.split("/")[2]);
+    }
+
+    if (url.pathname.startsWith("/embed/")) {
+      return Boolean(url.pathname.split("/")[2]);
+    }
+
+    return false;
   } catch (_error) {
     return false;
   }

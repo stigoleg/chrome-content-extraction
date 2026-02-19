@@ -32,6 +32,10 @@ const organizeOrderSelect = /** @type {HTMLSelectElement} */ (document.getElemen
 const compressLargeTextInput = /** @type {HTMLInputElement} */ (document.getElementById("compressLargeTextInput"));
 /** @type {HTMLInputElement} */
 const compressionThresholdInput = /** @type {HTMLInputElement} */ (document.getElementById("compressionThresholdInput"));
+/** @type {HTMLSelectElement} */
+const youtubeTranscriptStorageModeSelect = /** @type {HTMLSelectElement} */ (
+  document.getElementById("youtubeTranscriptStorageModeSelect")
+);
 /** @type {HTMLButtonElement} */
 const saveSettingsButton = /** @type {HTMLButtonElement} */ (document.getElementById("saveSettingsButton"));
 
@@ -68,6 +72,9 @@ async function refreshCaptureSettings() {
   toggleOrganizationInputs(settings.storageBackend === "sqlite");
   compressLargeTextInput.checked = Boolean(settings.compressLargeText);
   compressionThresholdInput.value = String(settings.compressionThresholdChars);
+  youtubeTranscriptStorageModeSelect.value = normalizeTranscriptStorageMode(
+    settings.youtubeTranscriptStorageMode
+  );
 }
 
 function toggleOrganizationInputs(disabled) {
@@ -94,6 +101,13 @@ function clampNumber(input, fallback) {
   return Math.max(1000, value);
 }
 
+function normalizeTranscriptStorageMode(value) {
+  if (value === "segments" || value === "both") {
+    return value;
+  }
+  return "document_text";
+}
+
 async function persistCaptureSettings() {
   const nextSettings = {
     compressLargeText: compressLargeTextInput.checked,
@@ -102,6 +116,9 @@ async function persistCaptureSettings() {
       DEFAULT_SETTINGS.compressionThresholdChars
     ),
     storageBackend: storageBackendSqlite.checked ? "sqlite" : "json",
+    youtubeTranscriptStorageMode: normalizeTranscriptStorageMode(
+      youtubeTranscriptStorageModeSelect.value
+    ),
     organizeByDate: organizeByDateInput.checked,
     organizeByType: organizeByTypeInput.checked,
     organizeOrder: organizeOrderSelect.value === "date_type" ? "date_type" : "type_date"

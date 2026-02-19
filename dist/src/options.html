@@ -65,6 +65,20 @@
 
         <hr />
 
+        <h2>YouTube Transcript Storage</h2>
+        <p>Choose what to store for YouTube transcript captures.</p>
+
+        <label class="field">
+          <span>Transcript storage mode</span>
+          <select id="youtubeTranscriptStorageModeSelect">
+            <option value="document_text">Store full transcript in <code>documentText</code> (default)</option>
+            <option value="segments">Store timestamped <code>transcriptSegments</code> only</option>
+            <option value="both">Store both <code>documentText</code> and <code>transcriptSegments</code></option>
+          </select>
+        </label>
+
+        <hr />
+
         <h2>Large Content Handling</h2>
         <p>Full content is always captured. Compression can reduce storage size for large captures.</p>
 

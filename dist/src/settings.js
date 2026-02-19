@@ -3,6 +3,7 @@ export const DEFAULT_SETTINGS = {
   compressLargeText: true,
   compressionThresholdChars: 75000,
   storageBackend: "json",
+  youtubeTranscriptStorageMode: "document_text",
   organizeByDate: false,
   organizeByType: false,
   organizeOrder: "type_date"

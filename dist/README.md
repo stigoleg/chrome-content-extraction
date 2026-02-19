@@ -31,6 +31,10 @@ This extension stores page content (selection optional) and YouTube transcript c
 - Content is never truncated; large captures can be compressed instead.
 - Gzip compression is always available (built-in or bundled fallback).
 - Notes queued with **Add highlight and note** are stored in `annotations` and cleared after saving.
+- YouTube transcript storage mode is configurable:
+  - `documentText` only (default)
+  - `transcriptSegments` only (timestamped)
+  - both `documentText` and `transcriptSegments`
 
 ## Extraction Coverage
 
