@@ -4,6 +4,16 @@ Capture the useful part of web pages, PDFs, and YouTube transcripts to local fil
 
 Context Capture Saver is built for research and AI workflows where you need clean, structured content without copy/paste noise.
 
+## Screenshots
+
+### Settings Page
+
+![Context Capture Saver Settings](context-capture-saver-settings.jpeg)
+
+### Bubble Menu
+
+![Context Capture Saver Bubble Menu](context-capture-saver-bubble.png)
+
 ## Why Use It
 
 - Save the main content from pages, not just raw HTML.
