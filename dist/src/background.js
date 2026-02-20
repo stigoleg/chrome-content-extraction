@@ -16,6 +16,7 @@ const MENU_SAVE_YOUTUBE_TRANSCRIPT = "save-youtube-transcript";
 const MENU_SAVE_YOUTUBE_TRANSCRIPT_WITH_COMMENT = "save-youtube-transcript-with-comment";
 const COMMAND_SAVE_SELECTION = "COMMAND_SAVE_SELECTION";
 const COMMAND_SAVE_SELECTION_WITH_COMMENT = "COMMAND_SAVE_SELECTION_WITH_COMMENT";
+const INTERNAL_SAVE_SELECTION_WITH_HIGHLIGHT = "INTERNAL_SAVE_SELECTION_WITH_HIGHLIGHT";
 
 const commentRequests = new Map();
 const pendingAnnotationsByTab = new Map();
@@ -1182,7 +1183,7 @@ async function refreshMenusForActiveTab() {
 
 async function handlePdfCapture(
   tabId,
-  { selectedText = "", comment = "", annotations = [] } = {}
+  { selectedText = "", comment = "", annotations = [], includeSelectionAnnotation = true } = {}
 ) {
   const tab = await chrome.tabs.get(tabId);
   if (!tab?.url) {
@@ -1236,6 +1237,7 @@ async function handlePdfCapture(
   const pdfDocumentText = Array.isArray(pdfData?.documentTextParts)
     ? pdfData.documentTextParts.join(" ")
     : "";
+  const annotationSelectionText = includeSelectionAnnotation ? resolvedSelection.text : "";
 
   const record = buildCaptureRecord({
     captureType: "pdf_document",
@@ -1256,7 +1258,7 @@ async function handlePdfCapture(
     },
     content: {
       documentTextParts: pdfData.documentTextParts,
-      annotations: buildAnnotations(annotations, resolvedSelection.text, comment, pdfDocumentText)
+      annotations: buildAnnotations(annotations, annotationSelectionText, comment, pdfDocumentText)
     },
     diagnostics: {
       missingFields: ["publishedAt"],
@@ -1336,7 +1338,8 @@ async function notifyError(tabId, error) {
   }
 }
 
-async function handleSelectionSave(tabId, selectionOverride = "") {
+async function handleSelectionSave(tabId, selectionOverride = "", options = {}) {
+  const includeSelectionAnnotation = options.includeSelectionAnnotation === true;
   const capture = await captureFromTab(tabId, "CAPTURE_SELECTION");
   if (!capture?.ok) {
     if (capture?.missingReceiver) {
@@ -1344,7 +1347,10 @@ async function handleSelectionSave(tabId, selectionOverride = "") {
         allowClipboardRead: true,
         allowClipboardCopy: true
       });
-      return handlePdfCapture(tabId, { selectedText: selection });
+      return handlePdfCapture(tabId, {
+        selectedText: selection,
+        includeSelectionAnnotation
+      });
     }
     throw new Error(capture?.error || "Failed to capture selection");
   }
@@ -1360,10 +1366,12 @@ async function handleSelectionSave(tabId, selectionOverride = "") {
     );
     return handlePdfCapture(tabId, {
       selectedText: resolvedSelection,
-      annotations: pendingAnnotations
+      annotations: pendingAnnotations,
+      includeSelectionAnnotation
     });
   }
 
+  const selectionForAnnotation = includeSelectionAnnotation ? capture.selectedText ?? "" : "";
   const record = buildCaptureRecord({
     captureType: "selected_text",
     source: capture.source,
@@ -1371,7 +1379,7 @@ async function handleSelectionSave(tabId, selectionOverride = "") {
       documentText: capture.documentText,
       annotations: buildAnnotations(
         pendingAnnotations,
-        capture.selectedText ?? "",
+        selectionForAnnotation,
         null,
         capture.documentText || ""
       )
@@ -1383,7 +1391,8 @@ async function handleSelectionSave(tabId, selectionOverride = "") {
   return { fileName, record: savedRecord };
 }
 
-async function handleSelectionSaveWithComment(tabId, selectionOverride = "") {
+async function handleSelectionSaveWithComment(tabId, selectionOverride = "", options = {}) {
+  const includeSelectionAnnotation = options.includeSelectionAnnotation === true;
   const capture = await captureFromTab(tabId, "CAPTURE_SELECTION_WITH_COMMENT");
   if (!capture?.ok) {
     if (capture?.missingReceiver) {
@@ -1395,7 +1404,11 @@ async function handleSelectionSaveWithComment(tabId, selectionOverride = "") {
         allowClipboardRead: true,
         allowClipboardCopy: true
       });
-      return handlePdfCapture(tabId, { selectedText: selection, comment });
+      return handlePdfCapture(tabId, {
+        selectedText: selection,
+        comment,
+        includeSelectionAnnotation
+      });
     }
     throw new Error(capture?.error || "Failed to capture selection");
   }
@@ -1412,10 +1425,12 @@ async function handleSelectionSaveWithComment(tabId, selectionOverride = "") {
     return handlePdfCapture(tabId, {
       selectedText: resolvedSelection,
       comment: capture.comment ?? "",
-      annotations: pendingAnnotations
+      annotations: pendingAnnotations,
+      includeSelectionAnnotation
     });
   }
 
+  const selectionForAnnotation = includeSelectionAnnotation ? capture.selectedText ?? "" : "";
   const record = buildCaptureRecord({
     captureType: "selected_text",
     source: capture.source,
@@ -1423,7 +1438,7 @@ async function handleSelectionSaveWithComment(tabId, selectionOverride = "") {
       documentText: capture.documentText,
       annotations: buildAnnotations(
         pendingAnnotations,
-        capture.selectedText ?? "",
+        selectionForAnnotation,
         capture.comment ?? "",
         capture.documentText || ""
       )
@@ -1521,6 +1536,9 @@ async function runAction(kind, tabId, selectionOverride = "") {
   let kindLabel = "selection";
   let resolvedKind = kind;
   try {
+    if (kind === INTERNAL_SAVE_SELECTION_WITH_HIGHLIGHT) {
+      kindLabel = "selection_with_highlight";
+    }
     if (kind === MENU_SAVE_YOUTUBE_TRANSCRIPT) {
       kindLabel = "youtube_transcript";
     }
@@ -1555,7 +1573,9 @@ async function runAction(kind, tabId, selectionOverride = "") {
     await notifyStart(tabId, kindLabel, forceNotification);
 
     if (resolvedKind === MENU_SAVE_SELECTION || resolvedKind === COMMAND_SAVE_SELECTION) {
-      const { fileName, record } = await handleSelectionSave(tabId, selectionOverride);
+      const { fileName, record } = await handleSelectionSave(tabId, selectionOverride, {
+        includeSelectionAnnotation: false
+      });
       await setBadge(tabId, "OK", "#2e7d32");
       chrome.notifications.clear(START_NOTIFICATION_ID).catch(() => undefined);
       await setLastCaptureStatus({ ok: true, kind: "selection", fileName });
@@ -1565,9 +1585,24 @@ async function runAction(kind, tabId, selectionOverride = "") {
       return { ok: true, fileName };
     }
 
+    if (resolvedKind === INTERNAL_SAVE_SELECTION_WITH_HIGHLIGHT) {
+      const { fileName, record } = await handleSelectionSave(tabId, selectionOverride, {
+        includeSelectionAnnotation: true
+      });
+      await setBadge(tabId, "OK", "#2e7d32");
+      chrome.notifications.clear(START_NOTIFICATION_ID).catch(() => undefined);
+      await setLastCaptureStatus({ ok: true, kind: "selection_with_highlight", fileName });
+      await notifySaved(tabId, record, fileName);
+      await clearNotesPanel(tabId);
+      console.info("Saved capture with highlight", fileName);
+      return { ok: true, fileName };
+    }
+
     if (resolvedKind === COMMAND_SAVE_SELECTION_WITH_COMMENT) {
       kindLabel = "selection_with_comment";
-      const { fileName, record } = await handleSelectionSaveWithComment(tabId, selectionOverride);
+      const { fileName, record } = await handleSelectionSaveWithComment(tabId, selectionOverride, {
+        includeSelectionAnnotation: false
+      });
       await setBadge(tabId, "OK", "#2e7d32");
       chrome.notifications.clear(START_NOTIFICATION_ID).catch(() => undefined);
       await setLastCaptureStatus({ ok: true, kind: "selection_with_note", fileName });
@@ -1579,7 +1614,9 @@ async function runAction(kind, tabId, selectionOverride = "") {
 
     if (resolvedKind === MENU_SAVE_WITH_COMMENT) {
       kindLabel = "selection_with_comment";
-      const { fileName, record } = await handleSelectionSaveWithComment(tabId, selectionOverride);
+      const { fileName, record } = await handleSelectionSaveWithComment(tabId, selectionOverride, {
+        includeSelectionAnnotation: false
+      });
       await setBadge(tabId, "OK", "#2e7d32");
       chrome.notifications.clear(START_NOTIFICATION_ID).catch(() => undefined);
       await setLastCaptureStatus({ ok: true, kind: "selection_with_note", fileName });
@@ -1901,6 +1938,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         if (message.kind === "selection") {
           return runAction("COMMAND_SAVE_SELECTION", tab.id);
+        }
+
+        if (message.kind === "selection_with_comment") {
+          return runAction("COMMAND_SAVE_SELECTION_WITH_COMMENT", tab.id);
+        }
+
+        if (message.kind === "selection_with_highlight") {
+          return runAction(INTERNAL_SAVE_SELECTION_WITH_HIGHLIGHT, tab.id);
         }
 
         if (message.kind === "youtube_transcript") {

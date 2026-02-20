@@ -7,40 +7,44 @@
     <link rel="stylesheet" href="./options.css" />
   </head>
   <body>
-    <main class="layout">
-      <section class="card">
-        <h1>Context Capture Saver</h1>
-        <p>
-          Choose the folder where capture JSON files should be stored.
-          You can change this at any time.
+    <main class="settings-layout">
+      <header class="settings-hero">
+        <p class="eyebrow">Context Capture Saver</p>
+        <h1>Settings</h1>
+        <p class="lead">
+          Configure storage, transcript behavior, and bubble-menu actions for faster capture workflows.
         </p>
+      </header>
+
+      <section class="settings-card">
+        <h2>Storage Location</h2>
+        <p class="section-copy">Choose where captures are written and verify write access.</p>
 
         <div class="status" id="folderStatus">No folder selected.</div>
 
         <div class="actions">
           <button id="chooseFolderButton">Choose folder</button>
-          <button id="testWriteButton">Test write</button>
+          <button id="testWriteButton" class="secondary">Test write</button>
           <button id="clearFolderButton" class="ghost">Clear folder</button>
         </div>
+      </section>
 
-        <hr />
-
-        <h2>Storage Format</h2>
-        <p>Choose how captures are stored on disk.</p>
+      <section class="settings-card">
+        <h2>Capture Storage</h2>
+        <p class="section-copy">Select output format and optional folder organization.</p>
 
         <label class="field checkbox">
           <input id="storageBackendJson" type="radio" name="storageBackend" value="json" />
-          <span>JSON files (default)</span>
+          <span>JSON files</span>
         </label>
 
         <label class="field checkbox">
           <input id="storageBackendSqlite" type="radio" name="storageBackend" value="sqlite" />
-          <span>SQLite database (stored as <code>context-captures.sqlite</code>)</span>
+          <span>SQLite database (<code>context-captures.sqlite</code>)</span>
         </label>
 
-        <section id="folderOrganizationSection">
-          <h2>Folder Organization</h2>
-          <p>Optional folder grouping for JSON captures.</p>
+        <section id="folderOrganizationSection" class="sub-card">
+          <h3>Folder Organization (JSON only)</h3>
 
           <label class="field checkbox">
             <input id="organizeByDateInput" type="checkbox" />
@@ -55,52 +59,57 @@
           <label class="field">
             <span>Folder order</span>
             <select id="organizeOrderSelect">
-              <option value="type_date">Create /Type/Date folders (default)</option>
-              <option value="date_type">Create /Date/Type folders</option>
+              <option value="type_date">/Type/Date</option>
+              <option value="date_type">/Date/Type</option>
             </select>
           </label>
-
-          <p class="hint">Folder organization applies to JSON mode only.</p>
         </section>
+      </section>
 
-        <hr />
+      <section class="settings-card">
+        <h2>Bubble Menu</h2>
+        <p class="section-copy">
+          Choose which actions appear when text is selected. Drag items to reorder buttons.
+        </p>
 
+        <ul id="bubbleMenuList" class="bubble-option-list" aria-label="Bubble menu actions"></ul>
+        <p id="bubbleMenuHint" class="hint">3 actions enabled. Drag to reorder.</p>
+      </section>
+
+      <section class="settings-card">
         <h2>YouTube Transcript Storage</h2>
-        <p>Choose what to store for YouTube transcript captures.</p>
-
         <label class="field">
-          <span>Transcript storage mode</span>
+          <span>Transcript mode</span>
           <select id="youtubeTranscriptStorageModeSelect">
-            <option value="document_text">Store full transcript in <code>documentText</code> (default)</option>
+            <option value="document_text">Store full transcript in <code>documentText</code></option>
             <option value="segments">Store timestamped <code>transcriptSegments</code> only</option>
             <option value="both">Store both <code>documentText</code> and <code>transcriptSegments</code></option>
           </select>
         </label>
+      </section>
 
-        <hr />
-
+      <section class="settings-card">
         <h2>Large Content Handling</h2>
-        <p>Full content is always captured. Compression can reduce storage size for large captures.</p>
+        <p class="section-copy">Compression reduces file size for long captures.</p>
 
         <label class="field checkbox">
           <input id="compressLargeTextInput" type="checkbox" />
-          <span>Compress large document text using gzip when available</span>
+          <span>Compress large document text with gzip when available</span>
         </label>
 
         <label class="field">
           <span>Compression threshold characters</span>
           <input id="compressionThresholdInput" type="number" min="1000" step="1000" />
         </label>
-
-        <div class="actions">
-          <button id="saveSettingsButton">Save capture settings</button>
-        </div>
-
-        <p class="hint">
-          Shortcuts: <code>Shift+Cmd+D</code> (save content) and <code>Shift+Cmd+C</code> (save with note) on macOS. Use
-          <code>Ctrl+Shift+D</code> and <code>Ctrl+Shift+C</code> on other platforms.
-        </p>
       </section>
+
+      <footer class="settings-footer">
+        <button id="saveSettingsButton" class="save">Save settings</button>
+        <p class="hint">
+          Shortcuts: <code>Shift+Cmd+D</code>/<code>Shift+Cmd+C</code> on macOS,
+          <code>Ctrl+Shift+D</code>/<code>Ctrl+Shift+C</code> elsewhere.
+        </p>
+      </footer>
     </main>
 
     <script type="module" src="./options.js"></script>

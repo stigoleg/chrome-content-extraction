@@ -1099,6 +1099,107 @@ const COMMENT_OVERLAY_ID = "ccs-comment-overlay";
 const NOTES_PANEL_ID = "ccs-notes-panel";
 const NOTES_COUNT_ID = "ccs-notes-count";
 const SELECTION_BUBBLE_ID = "ccs-selection-bubble";
+const CAPTURE_SETTINGS_KEY = "captureSettings";
+
+const DEFAULT_BUBBLE_MENU_ORDER = [
+  "save_content",
+  "save_content_with_highlight",
+  "highlight",
+  "highlight_with_note",
+  "save_content_with_note"
+];
+
+const DEFAULT_BUBBLE_MENU_ENABLED = [
+  "save_content",
+  "highlight",
+  "highlight_with_note"
+];
+
+const BUBBLE_ACTION_META = {
+  save_content: {
+    label: "Save content",
+    variant: "primary"
+  },
+  save_content_with_highlight: {
+    label: "Save content with highlight",
+    variant: "secondary"
+  },
+  save_content_with_note: {
+    label: "Save content with a note",
+    variant: "secondary"
+  },
+  highlight: {
+    label: "Highlight",
+    variant: "secondary"
+  },
+  highlight_with_note: {
+    label: "Highlight with a note",
+    variant: "secondary"
+  }
+};
+
+const bubbleMenuConfig = {
+  order: [...DEFAULT_BUBBLE_MENU_ORDER],
+  enabled: [...DEFAULT_BUBBLE_MENU_ENABLED]
+};
+
+function normalizeBubbleMenuConfig(raw) {
+  const validKeys = Object.keys(BUBBLE_ACTION_META);
+  const orderInput = Array.isArray(raw?.bubbleMenuOrder) ? raw.bubbleMenuOrder : [];
+  const enabledInput = Array.isArray(raw?.bubbleMenuEnabled) ? raw.bubbleMenuEnabled : [];
+
+  const order = [];
+  for (const key of orderInput) {
+    if (validKeys.includes(key) && !order.includes(key)) {
+      order.push(key);
+    }
+  }
+  if (!order.length) {
+    order.push(...DEFAULT_BUBBLE_MENU_ORDER);
+  } else {
+    for (const key of validKeys) {
+      if (!order.includes(key)) {
+        order.push(key);
+      }
+    }
+  }
+
+  const enabled = [];
+  for (const key of enabledInput) {
+    if (order.includes(key) && !enabled.includes(key)) {
+      enabled.push(key);
+    }
+  }
+  if (!enabled.length) {
+    enabled.push(...DEFAULT_BUBBLE_MENU_ENABLED);
+  }
+
+  return { order, enabled };
+}
+
+async function loadBubbleMenuConfig() {
+  try {
+    const result = await chrome.storage?.local?.get(CAPTURE_SETTINGS_KEY);
+    const settings = result?.[CAPTURE_SETTINGS_KEY] || {};
+    const normalized = normalizeBubbleMenuConfig(settings);
+    bubbleMenuConfig.order = normalized.order;
+    bubbleMenuConfig.enabled = normalized.enabled;
+  } catch (_error) {
+    bubbleMenuConfig.order = [...DEFAULT_BUBBLE_MENU_ORDER];
+    bubbleMenuConfig.enabled = [...DEFAULT_BUBBLE_MENU_ENABLED];
+  }
+}
+
+loadBubbleMenuConfig().catch(() => undefined);
+chrome.storage?.onChanged?.addListener((changes, areaName) => {
+  if (areaName !== "local" || !changes?.[CAPTURE_SETTINGS_KEY]) {
+    return;
+  }
+  const next = changes[CAPTURE_SETTINGS_KEY]?.newValue || {};
+  const normalized = normalizeBubbleMenuConfig(next);
+  bubbleMenuConfig.order = normalized.order;
+  bubbleMenuConfig.enabled = normalized.enabled;
+});
 
 function ensureToastStyles() {
   if (document.getElementById(TOAST_STYLE_ID)) {
@@ -1399,14 +1500,16 @@ function ensureCommentStyles() {
 
     .ccs-selection-bubble {
       position: fixed;
-      background: linear-gradient(180deg, #111827, #0f172a);
+      background: linear-gradient(165deg, #0f172a, #0b1222);
       color: #e2e8f0;
       border: 1px solid rgba(148, 163, 184, 0.28);
-      border-radius: 999px;
-      padding: 6px 10px;
+      border-radius: 14px;
+      padding: 6px;
       display: flex;
       gap: 6px;
       align-items: center;
+      flex-wrap: wrap;
+      max-width: min(96vw, 560px);
       box-shadow: 0 12px 28px rgba(2, 6, 23, 0.34);
       font: 12px/1 "Segoe UI", Arial, sans-serif;
       z-index: 2147483646;
@@ -1422,10 +1525,11 @@ function ensureCommentStyles() {
       font: inherit;
       font-weight: 600;
       cursor: pointer;
-      padding: 4px 6px;
-      border-radius: 999px;
+      padding: 6px 9px;
+      border-radius: 9px;
       letter-spacing: 0.1px;
       transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+      white-space: nowrap;
     }
 
     .ccs-selection-bubble .ccs-selection-bubble__action--primary {
@@ -1523,6 +1627,141 @@ function clearNotesPanel() {
   panel?.remove();
 }
 
+async function resolveBubbleSelectionText(bubble, allowPdfClipboardCopy = true) {
+  let text = normalizeText(bubble?.dataset?.selectionText || "");
+  if (text || !isPdfPage()) {
+    return text;
+  }
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "RESOLVE_PDF_SELECTION",
+      allowClipboardCopy: allowPdfClipboardCopy
+    });
+    if (response?.ok) {
+      text = normalizeText(response.selectedText || "");
+      if (text) {
+        bubble.dataset.selectionText = text;
+      }
+    }
+  } catch (_error) {
+    text = "";
+  }
+  return text;
+}
+
+async function runBubbleAction(actionKey, bubble) {
+  if (!bubble) {
+    return;
+  }
+
+  const closeBubble = () => {
+    bubble.remove();
+  };
+
+  if (actionKey === "save_content") {
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "RUN_CAPTURE", kind: "selection" });
+      if (!response?.ok) {
+        showErrorToast(response?.error || "Capture failed");
+      }
+    } catch (error) {
+      showErrorToast(error?.message || "Capture failed");
+    } finally {
+      closeBubble();
+    }
+    return;
+  }
+
+  if (actionKey === "save_content_with_note") {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: "RUN_CAPTURE",
+        kind: "selection_with_comment"
+      });
+      if (!response?.ok) {
+        showErrorToast(response?.error || "Capture failed");
+      }
+    } catch (error) {
+      showErrorToast(error?.message || "Capture failed");
+    } finally {
+      closeBubble();
+    }
+    return;
+  }
+
+  if (actionKey === "save_content_with_highlight") {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: "RUN_CAPTURE",
+        kind: "selection_with_highlight"
+      });
+      if (!response?.ok) {
+        showErrorToast(response?.error || "Capture failed");
+      }
+    } catch (error) {
+      showErrorToast(error?.message || "Capture failed");
+    } finally {
+      closeBubble();
+    }
+    return;
+  }
+
+  const text = await resolveBubbleSelectionText(bubble, true);
+  if (!text.trim()) {
+    showErrorToast("Select text first.");
+    closeBubble();
+    return;
+  }
+
+  if (actionKey === "highlight") {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: "ADD_NOTE",
+        selectedText: text,
+        comment: null
+      });
+      if (response?.ok) {
+        updateNotesPanel(response.count || 0);
+        showInfoToast({ title: "Highlight added", detail: "Selection queued for saving." });
+      } else {
+        showErrorToast(response?.error || "Failed to add highlight");
+      }
+    } catch (error) {
+      showErrorToast(error?.message || "Failed to add highlight");
+    } finally {
+      closeBubble();
+    }
+    return;
+  }
+
+  if (actionKey === "highlight_with_note") {
+    const comment = await requestComment();
+    if (comment === null) {
+      closeBubble();
+      return;
+    }
+
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: "ADD_NOTE",
+        selectedText: text,
+        comment
+      });
+      if (response?.ok) {
+        updateNotesPanel(response.count || 0);
+        showInfoToast({ title: "Highlight added", detail: "Note queued for saving." });
+      } else {
+        showErrorToast(response?.error || "Failed to add highlight");
+      }
+    } catch (error) {
+      showErrorToast(error?.message || "Failed to add highlight");
+    } finally {
+      closeBubble();
+    }
+  }
+}
+
 function ensureSelectionBubble() {
   let bubble = document.getElementById(SELECTION_BUBBLE_ID);
   if (bubble) {
@@ -1534,106 +1773,31 @@ function ensureSelectionBubble() {
   bubble = document.createElement("div");
   bubble.id = SELECTION_BUBBLE_ID;
   bubble.className = "ccs-selection-bubble";
-
-  const addNoteButton = document.createElement("button");
-  addNoteButton.type = "button";
-  addNoteButton.className = "ccs-selection-bubble__action ccs-selection-bubble__action--primary";
-  addNoteButton.textContent = "Add highlight";
-
-  const addCommentButton = document.createElement("button");
-  addCommentButton.type = "button";
-  addCommentButton.className = "ccs-selection-bubble__action ccs-selection-bubble__action--secondary";
-  addCommentButton.textContent = "Add highlight and note";
-
-  bubble.append(addNoteButton, addCommentButton);
   bubble.addEventListener("mousedown", (event) => {
     event.preventDefault();
   });
 
-  addNoteButton.addEventListener("click", async () => {
-    let text = normalizeText(bubble.dataset.selectionText || "");
-    if (!text && isPdfPage()) {
-      try {
-        const response = await chrome.runtime.sendMessage({
-          type: "RESOLVE_PDF_SELECTION",
-          allowClipboardCopy: true
-        });
-        if (response?.ok) {
-          text = normalizeText(response.selectedText || "");
-          if (text) {
-            bubble.dataset.selectionText = text;
-          }
-        }
-      } catch (_error) {
-        text = "";
-      }
-    }
-    if (!text.trim()) {
-      showErrorToast("Select text in the PDF first.");
-      return;
-    }
-    try {
-      const response = await chrome.runtime.sendMessage({
-        type: "ADD_NOTE",
-        selectedText: text,
-        comment: null
-      });
-      if (response?.ok) {
-        updateNotesPanel(response.count || 0);
-        showInfoToast({ title: "Highlight added", detail: "Selection queued for saving." });
-      } else {
-        showErrorToast(response?.error || "Failed to add note");
-      }
-    } catch (error) {
-      showErrorToast(error?.message || "Failed to add note");
-    } finally {
-      bubble.remove();
-    }
-  });
+  const orderedEnabledActions = bubbleMenuConfig.order.filter((action) =>
+    bubbleMenuConfig.enabled.includes(action)
+  );
+  const actions = orderedEnabledActions.length
+    ? orderedEnabledActions
+    : ["save_content", "highlight", "highlight_with_note"];
 
-  addCommentButton.addEventListener("click", async () => {
-    let text = normalizeText(bubble.dataset.selectionText || "");
-    if (!text && isPdfPage()) {
-      try {
-        const response = await chrome.runtime.sendMessage({
-          type: "RESOLVE_PDF_SELECTION",
-          allowClipboardCopy: true
-        });
-        if (response?.ok) {
-          text = normalizeText(response.selectedText || "");
-          if (text) {
-            bubble.dataset.selectionText = text;
-          }
-        }
-      } catch (_error) {
-        text = "";
-      }
-    }
-    if (!text.trim()) {
-      showErrorToast("Select text in the PDF first.");
+  actions.forEach((actionKey, index) => {
+    const meta = BUBBLE_ACTION_META[actionKey];
+    if (!meta) {
       return;
     }
-    const comment = await requestComment();
-    if (comment === null) {
-      return;
-    }
-    try {
-      const response = await chrome.runtime.sendMessage({
-        type: "ADD_NOTE",
-        selectedText: text,
-        comment
-      });
-      if (response?.ok) {
-        updateNotesPanel(response.count || 0);
-        showInfoToast({ title: "Highlight added", detail: "Note queued for saving." });
-      } else {
-        showErrorToast(response?.error || "Failed to add note");
-      }
-    } catch (error) {
-      showErrorToast(error?.message || "Failed to add note");
-    } finally {
-      bubble.remove();
-    }
+    const button = document.createElement("button");
+    button.type = "button";
+    const variant = index === 0 ? "primary" : meta.variant;
+    button.className = `ccs-selection-bubble__action ccs-selection-bubble__action--${variant}`;
+    button.textContent = meta.label;
+    button.addEventListener("click", () => {
+      void runBubbleAction(actionKey, bubble);
+    });
+    bubble.appendChild(button);
   });
 
   document.body?.appendChild(bubble);
