@@ -14,13 +14,13 @@ Desired result: Users can efficiently navigate captures with clear list/detail w
 ## 2. In-app chunk search
 Description: Let users search captured chunks directly within the extension.
 Desired result: Fast chunk search with FTS-first strategy and graceful fallback.
-- [ ] Add search input and debounced query execution.
-- [ ] Use SQLite FTS query path when available.
-- [ ] Fallback to LIKE query path when FTS is unavailable.
-- [ ] Highlight matched terms in result preview.
-- [ ] Add tests for both search modes.
-- [ ] Run `npm run check`, `npm run typecheck`, and `npm test`; resolve failures.
-- [ ] Commit with a short message, e.g. `feature: add chunk search ui`.
+- [x] Add search input and debounced query execution.
+- [x] Use SQLite FTS query path when available.
+- [x] Fallback to LIKE query path when FTS is unavailable.
+- [x] Highlight matched terms in result preview.
+- [x] Add tests for both search modes.
+- [x] Run `npm run check`, `npm run typecheck`, and `npm test`; resolve failures.
+- [x] Commit with a short message, e.g. `feature: add chunk search ui`.
 
 ## 3. Document context view
 Description: Expose full context for a document (captures, chunks, graph links) in one screen.

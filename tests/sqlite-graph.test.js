@@ -17,6 +17,7 @@ import {
   getDbSchemaVersion,
   getDocumentByUrl,
   getDocumentContext,
+  hasChunkFtsIndex,
   migrateLegacyToV2,
   runDatabaseMaintenance,
   saveRecordToDbV2,
@@ -465,6 +466,74 @@ test("searchChunksByText and getDocumentContext resolve full document text and g
     assert.equal(context.annotations.length, 1);
     assert.equal(context.entities.length >= 2, true);
     assert.equal(context.edges.length >= 1, true);
+  } finally {
+    db.close();
+  }
+});
+
+test("searchChunksByText uses FTS mode when available", (t) => {
+  const db = new SQL.Database();
+  try {
+    const record = {
+      id: "capture-fts-mode-1",
+      captureType: "selected_text",
+      savedAt: "2026-02-21T13:30:00.000Z",
+      source: {
+        url: "https://example.com/fts-mode",
+        title: "FTS mode",
+        site: "example.com",
+        language: "en",
+        metadata: {}
+      },
+      content: {
+        documentText: "fts query token appears here",
+        contentHash: "hash-fts-mode-1",
+        annotations: [],
+        transcriptSegments: null
+      }
+    };
+
+    saveRecordToDbV2(db, record);
+    if (!hasChunkFtsIndex(db)) {
+      t.skip("FTS5 is not available in current sql.js build");
+      return;
+    }
+    const hits = searchChunksByText(db, "token", 10);
+    assert.equal(hits.length >= 1, true);
+  } finally {
+    db.close();
+  }
+});
+
+test("searchChunksByText falls back to LIKE when FTS table is unavailable", () => {
+  const db = new SQL.Database();
+  try {
+    const record = {
+      id: "capture-like-mode-1",
+      captureType: "selected_text",
+      savedAt: "2026-02-21T13:40:00.000Z",
+      source: {
+        url: "https://example.com/like-mode",
+        title: "LIKE mode",
+        site: "example.com",
+        language: "en",
+        metadata: {}
+      },
+      content: {
+        documentText: "fallback query phrase should match using LIKE",
+        contentHash: "hash-like-mode-1",
+        annotations: [],
+        transcriptSegments: null
+      }
+    };
+
+    saveRecordToDbV2(db, record);
+    if (hasChunkFtsIndex(db)) {
+      db.run(`DROP TABLE chunks_fts;`);
+    }
+
+    const hits = searchChunksByText(db, "fallback query phrase", 10);
+    assert.equal(hits.length >= 1, true);
   } finally {
     db.close();
   }

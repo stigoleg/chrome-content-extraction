@@ -140,7 +140,7 @@ function tableExists(db, name) {
   return Boolean(row?.name);
 }
 
-function hasFtsTable(db) {
+export function hasChunkFtsIndex(db) {
   return tableExists(db, "chunks_fts");
 }
 
@@ -245,7 +245,7 @@ export function searchChunksByText(db, query, limit = DEFAULT_LIST_LIMIT) {
   }
   const normalizedLimit = Math.max(1, clampInteger(limit, DEFAULT_LIST_LIMIT));
 
-  if (hasFtsTable(db)) {
+  if (hasChunkFtsIndex(db)) {
     try {
       const rows = runSelectAll(
         db,

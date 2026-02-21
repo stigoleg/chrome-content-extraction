@@ -262,6 +262,47 @@ button.ghost {
   gap: 12px;
 }
 
+.chunk-search-pane {
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  min-height: 240px;
+}
+
+.chunk-search-controls {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e0e7f1;
+}
+
+.chunk-search-results {
+  margin: 0;
+  padding: 10px;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+  overflow: auto;
+}
+
+.chunk-search-result {
+  border: 1px solid #d6dfea;
+  border-radius: 10px;
+  background: #fbfdff;
+  padding: 10px;
+  display: grid;
+  gap: 4px;
+}
+
+.chunk-search-result mark {
+  background: #fff3b0;
+  color: #4f3500;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.chunk-search-result__meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .detail-card {
   border: 1px solid #dae3f0;
   border-radius: 10px;

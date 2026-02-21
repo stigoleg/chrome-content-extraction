@@ -10,15 +10,18 @@ import { resolveStorageBackendWrites } from "./storage-backend.js";
 import { getSavedDirectoryHandle } from "./storage.js";
 import {
   DEFAULT_DB_NAME,
+  hasChunkFtsIndex,
   getDocumentContext,
   listRecentCaptures,
-  openSqliteFromDirectoryHandle
+  openSqliteFromDirectoryHandle,
+  searchChunksByText
 } from "./sqlite.js";
 
 const MAX_SQLITE_SCAN = 10000;
 const SQLITE_BATCH_SIZE = 250;
 const MAX_JSON_SCAN = 2000;
 const SEARCH_DEBOUNCE_MS = 180;
+const CHUNK_SEARCH_LIMIT = 40;
 
 /** @type {HTMLButtonElement} */
 const refreshButton = /** @type {HTMLButtonElement} */ (document.getElementById("refreshButton"));
@@ -58,6 +61,12 @@ const pageLabel = /** @type {HTMLElement} */ (document.getElementById("pageLabel
 const detailMeta = /** @type {HTMLElement} */ (document.getElementById("detailMeta"));
 /** @type {HTMLElement} */
 const detailContent = /** @type {HTMLElement} */ (document.getElementById("detailContent"));
+/** @type {HTMLInputElement} */
+const chunkSearchInput = /** @type {HTMLInputElement} */ (document.getElementById("chunkSearchInput"));
+/** @type {HTMLElement} */
+const chunkSearchStatus = /** @type {HTMLElement} */ (document.getElementById("chunkSearchStatus"));
+/** @type {HTMLUListElement} */
+const chunkSearchResults = /** @type {HTMLUListElement} */ (document.getElementById("chunkSearchResults"));
 
 const state = {
   directoryHandle: null,
@@ -84,6 +93,7 @@ const state = {
 };
 
 let searchDebounceTimer = 0;
+let chunkSearchDebounceTimer = 0;
 
 function formatDate(value) {
   const parsed = Date.parse(String(value || ""));
@@ -102,6 +112,33 @@ function setStatus(message, mode = "ok") {
   if (mode === "error") {
     statusRow.classList.add("is-error");
   }
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function buildHighlightedHtml(text, query) {
+  const safeText = escapeHtml(text);
+  const normalizedQuery = String(query || "").trim();
+  if (!normalizedQuery) {
+    return safeText;
+  }
+  const escapedPattern = normalizedQuery.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (!escapedPattern) {
+    return safeText;
+  }
+  const regex = new RegExp(`(${escapedPattern})`, "ig");
+  return safeText.replace(regex, "<mark>$1</mark>");
+}
+
+function updateChunkSearchStatus(message) {
+  chunkSearchStatus.textContent = message;
 }
 
 function captureKey(summary) {
@@ -448,6 +485,74 @@ function renderLibrary() {
   }
 }
 
+function renderChunkSearchResults(results, query, modeLabel) {
+  chunkSearchResults.textContent = "";
+  if (!results.length) {
+    const item = document.createElement("li");
+    item.className = "chunk-search-result";
+    item.textContent = "No chunk matches found.";
+    chunkSearchResults.appendChild(item);
+    updateChunkSearchStatus(`No results (${modeLabel} mode).`);
+    return;
+  }
+
+  updateChunkSearchStatus(`${results.length} result${results.length === 1 ? "" : "s"} (${modeLabel} mode).`);
+
+  for (const row of results) {
+    const item = document.createElement("li");
+    item.className = "chunk-search-result";
+
+    const preview = document.createElement("div");
+    const sourceText = String(row.text || row.comment || "").slice(0, 500);
+    preview.innerHTML = buildHighlightedHtml(sourceText, query);
+
+    const meta = document.createElement("div");
+    meta.className = "chunk-search-result__meta";
+    const type = row.chunk_type || "chunk";
+    const title = row.document_title || row.document_url || "untitled";
+    meta.textContent = `${type} · ${title}`;
+
+    item.append(preview, meta);
+
+    const captureId = String(row.capture_id || "").trim();
+    if (captureId) {
+      item.style.cursor = "pointer";
+      item.addEventListener("click", () => {
+        const match = state.captures.find(
+          (capture) => capture.backend === "sqlite" && capture.captureId === captureId
+        );
+        if (!match) {
+          return;
+        }
+        state.selectedKey = match._key;
+        renderLibrary();
+        loadAndRenderDetail(match).catch(() => undefined);
+      });
+    }
+
+    chunkSearchResults.appendChild(item);
+  }
+}
+
+function runChunkSearch(query) {
+  const normalized = String(query || "").trim();
+  if (!normalized) {
+    chunkSearchResults.textContent = "";
+    updateChunkSearchStatus("Search is available when SQLite storage is enabled.");
+    return;
+  }
+
+  if (!state.sqliteSession?.db) {
+    chunkSearchResults.textContent = "";
+    updateChunkSearchStatus("SQLite capture data is not available for search.");
+    return;
+  }
+
+  const modeLabel = hasChunkFtsIndex(state.sqliteSession.db) ? "FTS" : "LIKE";
+  const results = searchChunksByText(state.sqliteSession.db, normalized, CHUNK_SEARCH_LIMIT);
+  renderChunkSearchResults(results, normalized, modeLabel);
+}
+
 async function buildSqliteDetail(summary) {
   if (!state.sqliteSession?.db || !summary.documentId) {
     return null;
@@ -570,6 +675,16 @@ function handleSearchChanged() {
   }, SEARCH_DEBOUNCE_MS);
 }
 
+function handleChunkSearchChanged() {
+  if (chunkSearchDebounceTimer) {
+    clearTimeout(chunkSearchDebounceTimer);
+  }
+  chunkSearchDebounceTimer = window.setTimeout(() => {
+    chunkSearchDebounceTimer = 0;
+    runChunkSearch(chunkSearchInput.value);
+  }, SEARCH_DEBOUNCE_MS);
+}
+
 async function loadLibraryData() {
   setStatus("Loading capture library...");
 
@@ -584,6 +699,8 @@ async function loadLibraryData() {
   state.directoryHandle = directoryHandle;
   if (!directoryHandle) {
     setStatus("No storage folder is linked. Open Settings and select a folder.", "warning");
+    updateChunkSearchStatus("SQLite capture data is not available for search.");
+    chunkSearchResults.textContent = "";
     renderLibrary();
     return;
   }
@@ -618,6 +735,14 @@ async function loadLibraryData() {
   const options = extractFilterOptions(state.captures);
   renderOptions(typeFilter, options.captureTypes, "All types");
   renderOptions(siteFilter, options.sites, "All sites");
+  chunkSearchResults.textContent = "";
+
+  if (state.sqliteSession?.db) {
+    const mode = hasChunkFtsIndex(state.sqliteSession.db) ? "FTS" : "LIKE";
+    updateChunkSearchStatus(`Search ready (${mode} mode).`);
+  } else {
+    updateChunkSearchStatus("SQLite capture data is not available for search.");
+  }
 
   renderLibrary();
 
@@ -635,6 +760,10 @@ async function loadLibraryData() {
   } else {
     setStatus(`Loaded ${state.captures.length} captures.`, "ok");
   }
+
+  if (chunkSearchInput.value.trim()) {
+    runChunkSearch(chunkSearchInput.value);
+  }
 }
 
 refreshButton.addEventListener("click", () => {
@@ -648,6 +777,7 @@ openSettingsButton.addEventListener("click", () => {
 });
 
 searchInput.addEventListener("input", handleSearchChanged);
+chunkSearchInput.addEventListener("input", handleChunkSearchChanged);
 typeFilter.addEventListener("change", onFilterChanged);
 siteFilter.addEventListener("change", onFilterChanged);
 fromDateInput.addEventListener("change", onFilterChanged);

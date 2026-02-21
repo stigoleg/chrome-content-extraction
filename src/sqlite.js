@@ -4,6 +4,7 @@ import { sanitizeAnnotations } from "./annotation-policy.js";
 import {
   getDocumentByUrl,
   getDocumentContext,
+  hasChunkFtsIndex,
   listRecentCaptures,
   searchChunksByText
 } from "./sqlite-query.js";
@@ -2338,4 +2339,10 @@ export async function saveRecordToSqlite(directoryHandle, record, dbFileName = D
   }
 }
 
-export { getDocumentByUrl, listRecentCaptures, searchChunksByText, getDocumentContext };
+export {
+  getDocumentByUrl,
+  listRecentCaptures,
+  searchChunksByText,
+  getDocumentContext,
+  hasChunkFtsIndex
+};

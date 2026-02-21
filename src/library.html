@@ -107,6 +107,20 @@
           </section>
         </article>
       </section>
+
+      <section class="library-card chunk-search-pane">
+        <header class="pane-header">
+          <h2>Chunk Search</h2>
+          <p id="chunkSearchStatus" class="muted">Search is available when SQLite storage is enabled.</p>
+        </header>
+        <div class="chunk-search-controls">
+          <label class="field search-field">
+            <span>Chunk query</span>
+            <input id="chunkSearchInput" type="search" placeholder="Search highlights, notes, and transcript chunks" />
+          </label>
+        </div>
+        <ul id="chunkSearchResults" class="chunk-search-results" aria-label="Chunk search results"></ul>
+      </section>
     </main>
 
     <script type="module" src="./library.js"></script>
