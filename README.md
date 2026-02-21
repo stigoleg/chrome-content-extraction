@@ -315,3 +315,7 @@ erDiagram
 ```
 
 Note: `edges.from_entity_id` and `edges.to_entity_id` both reference `entities.entity_id`. Also, `provenance.subject_id` is polymorphic (`entity_id` or `edge_id`) based on `subject_type`, so that relation is enforced in application logic rather than a single SQL foreign key.
+
+## License
+
+This project is licensed under the MIT License. See `LICENCE.md`.
