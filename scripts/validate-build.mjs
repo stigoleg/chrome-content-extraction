@@ -52,6 +52,33 @@ export function validateManifestForTarget(manifest, target) {
     errors.push('Firefox manifest must not include "offscreen" permission.');
   }
 
+  const contentScripts = Array.isArray(manifest.content_scripts) ? manifest.content_scripts : [];
+  const contentScriptFiles = new Set(
+    contentScripts.flatMap((entry) => (Array.isArray(entry?.js) ? entry.js : []))
+  );
+  if (contentScriptFiles.has("src/content.js")) {
+    const requiredModuleResources = [
+      "src/content-main.js",
+      "src/content-metadata.js",
+      "src/bubble-settings.js",
+      "src/url-helpers.js"
+    ];
+    const webAccessibleEntries = Array.isArray(manifest.web_accessible_resources)
+      ? manifest.web_accessible_resources
+      : [];
+    const exposedResources = new Set(
+      webAccessibleEntries.flatMap((entry) => (Array.isArray(entry?.resources) ? entry.resources : []))
+    );
+
+    for (const resource of requiredModuleResources) {
+      if (!exposedResources.has(resource)) {
+        errors.push(
+          `Manifest missing web_accessible_resources entry for "${resource}" required by content script bootstrap.`
+        );
+      }
+    }
+  }
+
   return errors;
 }
 

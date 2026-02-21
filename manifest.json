@@ -27,6 +27,19 @@
     "default_title": "Context Capture Saver",
     "default_popup": "src/popup.html"
   },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/content-main.js",
+        "src/content-metadata.js",
+        "src/bubble-settings.js",
+        "src/url-helpers.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ],
   "content_scripts": [
     {
       "matches": [

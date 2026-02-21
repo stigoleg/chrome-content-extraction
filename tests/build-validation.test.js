@@ -12,21 +12,75 @@ import {
 test("validateManifestForTarget enforces target-specific offscreen permissions", () => {
   const chromeManifest = {
     manifest_version: 3,
-    permissions: ["storage", "offscreen"]
+    permissions: ["storage", "offscreen"],
+    content_scripts: [{ js: ["src/content.js"] }],
+    web_accessible_resources: [
+      {
+        resources: [
+          "src/content-main.js",
+          "src/content-metadata.js",
+          "src/bubble-settings.js",
+          "src/url-helpers.js"
+        ],
+        matches: ["<all_urls>"]
+      }
+    ]
   };
   assert.deepEqual(validateManifestForTarget(chromeManifest, "chrome"), []);
 
   const firefoxManifest = {
     manifest_version: 3,
-    permissions: ["storage"]
+    permissions: ["storage"],
+    content_scripts: [{ js: ["src/content.js"] }],
+    web_accessible_resources: [
+      {
+        resources: [
+          "src/content-main.js",
+          "src/content-metadata.js",
+          "src/bubble-settings.js",
+          "src/url-helpers.js"
+        ],
+        matches: ["<all_urls>"]
+      }
+    ]
   };
   assert.deepEqual(validateManifestForTarget(firefoxManifest, "firefox"), []);
 
   const invalidFirefox = {
     manifest_version: 3,
-    permissions: ["storage", "offscreen"]
+    permissions: ["storage", "offscreen"],
+    content_scripts: [{ js: ["src/content.js"] }],
+    web_accessible_resources: [
+      {
+        resources: [
+          "src/content-main.js",
+          "src/content-metadata.js",
+          "src/bubble-settings.js",
+          "src/url-helpers.js"
+        ],
+        matches: ["<all_urls>"]
+      }
+    ]
   };
   assert.equal(validateManifestForTarget(invalidFirefox, "firefox").length > 0, true);
+
+  const missingBootstrapResource = {
+    manifest_version: 3,
+    permissions: ["storage", "offscreen"],
+    content_scripts: [{ js: ["src/content.js"] }],
+    web_accessible_resources: [
+      {
+        resources: ["src/content-main.js"],
+        matches: ["<all_urls>"]
+      }
+    ]
+  };
+  assert.equal(
+    validateManifestForTarget(missingBootstrapResource, "chrome").some((issue) =>
+      issue.includes('src/content-metadata.js')
+    ),
+    true
+  );
 });
 
 test("validateBuildOutputs checks required structure and zip artifacts", async () => {
@@ -40,11 +94,41 @@ test("validateBuildOutputs checks required structure and zip artifacts", async (
 
     await writeFile(
       path.join(chromeDir, "manifest.json"),
-      JSON.stringify({ manifest_version: 3, permissions: ["offscreen"] })
+      JSON.stringify({
+        manifest_version: 3,
+        permissions: ["offscreen"],
+        content_scripts: [{ js: ["src/content.js"] }],
+        web_accessible_resources: [
+          {
+            resources: [
+              "src/content-main.js",
+              "src/content-metadata.js",
+              "src/bubble-settings.js",
+              "src/url-helpers.js"
+            ],
+            matches: ["<all_urls>"]
+          }
+        ]
+      })
     );
     await writeFile(
       path.join(firefoxDir, "manifest.json"),
-      JSON.stringify({ manifest_version: 3, permissions: [] })
+      JSON.stringify({
+        manifest_version: 3,
+        permissions: [],
+        content_scripts: [{ js: ["src/content.js"] }],
+        web_accessible_resources: [
+          {
+            resources: [
+              "src/content-main.js",
+              "src/content-metadata.js",
+              "src/bubble-settings.js",
+              "src/url-helpers.js"
+            ],
+            matches: ["<all_urls>"]
+          }
+        ]
+      })
     );
 
     for (const zipName of [
