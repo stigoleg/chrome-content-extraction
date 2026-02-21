@@ -3,6 +3,7 @@ import { buildCaptureRecord, buildFileName, validateCaptureRecord } from "./sche
 import { SaveOperationQueue, createAbortErrorForQueue } from "./save-queue.js";
 import { getLastCaptureStatus, getSettings, setLastCaptureStatus } from "./settings.js";
 import { buildJsonChunksForRecord, saveRecordToSqlite } from "./sqlite.js";
+import { assertAllowedYouTubeFetchUrl } from "./url-guards.js";
 import {
   ensureReadWritePermission,
   getSavedDirectoryHandle,
@@ -2080,7 +2081,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === "YT_FETCH_TEXT") {
-    fetch(message.url, { credentials: "include" })
+    let allowedUrl = null;
+    try {
+      allowedUrl = assertAllowedYouTubeFetchUrl(message.url);
+    } catch (error) {
+      sendResponse({ ok: false, error: error?.message || "Blocked fetch URL." });
+      return true;
+    }
+
+    fetch(allowedUrl, { credentials: "include" })
       .then(async (response) => {
         if (!response.ok) {
           throw new Error(`Fetch failed (${response.status})`);
@@ -2095,7 +2104,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === "YT_FETCH_JSON") {
-    fetch(message.url, { credentials: "include" })
+    let allowedUrl = null;
+    try {
+      allowedUrl = assertAllowedYouTubeFetchUrl(message.url);
+    } catch (error) {
+      sendResponse({ ok: false, error: error?.message || "Blocked fetch URL." });
+      return true;
+    }
+
+    fetch(allowedUrl, { credentials: "include" })
       .then(async (response) => {
         if (!response.ok) {
           throw new Error(`Fetch failed (${response.status})`);
