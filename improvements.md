@@ -281,6 +281,13 @@ Desired result: Build pipeline fails early on manifest/output packaging mistakes
 - [ ] Improve error output for failed validation.
 - [ ] Run `npm run check`, `npm run typecheck`, and `npm test`; resolve failures.
 - [ ] Commit with a short message, e.g. `build: validate browser artifact manifests`.
+- [x] Add script to validate built manifests per target.
+- [x] Assert required/forbidden permissions per target.
+- [x] Validate zip names and output structure.
+- [x] Add validation step in CI/release workflows.
+- [x] Improve error output for failed validation.
+- [x] Run `npm run check`, `npm run typecheck`, and `npm test`; resolve failures.
+- [x] Commit with a short message, e.g. `build: validate browser artifact manifests`.
 
 ## 19. Add i18n scaffolding
 Description: Prepare UI text system for localization and cleaner message management.

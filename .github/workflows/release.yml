@@ -28,6 +28,9 @@ jobs:
       - name: Verify and build
         run: npm run verify
 
+      - name: Validate build artifacts
+        run: npm run validate:build
+
       - name: Create checksums
         run: |
           sha256sum dist/context-capture-saver-chrome.zip > dist/context-capture-saver-chrome.zip.sha256

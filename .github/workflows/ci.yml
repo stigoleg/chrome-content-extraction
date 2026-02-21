@@ -40,6 +40,12 @@ jobs:
       - name: Tests
         run: npm run test:ci
 
+      - name: Build artifacts
+        run: npm run build
+
+      - name: Validate build artifacts
+        run: npm run validate:build
+
       - name: Production dependency audit
         run: npm run audit:prod
 

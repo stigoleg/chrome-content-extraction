@@ -13,8 +13,11 @@
     "build": "node scripts/build.mjs --target=all",
     "build:chrome": "node scripts/build.mjs --target=chrome",
     "build:firefox": "node scripts/build.mjs --target=firefox",
+    "validate:build": "node scripts/validate-build.mjs --target=all",
+    "validate:build:chrome": "node scripts/validate-build.mjs --target=chrome",
+    "validate:build:firefox": "node scripts/validate-build.mjs --target=firefox",
     "audit:prod": "npm audit --omit=dev --audit-level=high",
-    "verify": "npm run check && npm run typecheck && npm run typecheck:strict && npm run test:ci && npm run build"
+    "verify": "npm run check && npm run typecheck && npm run typecheck:strict && npm run test:ci && npm run build && npm run validate:build"
   },
   "devDependencies": {
     "@types/node": "^25.2.3",
