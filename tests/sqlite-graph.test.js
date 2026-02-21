@@ -119,6 +119,9 @@ test("ensureSchemaV2 creates latest graph-ready tables on a new database", () =>
     ]) {
       assert.equal(tableNames.has(table), true, `Expected table ${table} to exist`);
     }
+
+    const chunkColumns = new Set(queryRows(db, `PRAGMA table_info(chunks);`).map((row) => row.name));
+    assert.equal(chunkColumns.has("chunk_index"), true);
   } finally {
     db.close();
   }
@@ -202,6 +205,7 @@ test("migrateLegacyToV2 migrates legacy captures rows into documents/captures/ch
     assert.equal(scalar(db, `SELECT COUNT(*) FROM documents;`), 1);
     assert.equal(scalar(db, `SELECT COUNT(*) FROM captures;`), 1);
     assert.equal(scalar(db, `SELECT COUNT(*) FROM chunks;`) >= 1, true);
+    assert.equal(scalar(db, `SELECT COUNT(*) FROM chunks WHERE chunk_index IS NULL;`), 0);
     assert.equal(scalar(db, `SELECT COUNT(*) FROM annotations;`) >= 1, true);
     assert.equal(scalar(db, `SELECT COUNT(*) FROM entities;`) >= 2, true);
     assert.equal(scalar(db, `SELECT COUNT(*) FROM edges;`) >= 1, true);
@@ -213,7 +217,7 @@ test("migrateLegacyToV2 migrates legacy captures rows into documents/captures/ch
     );
     assert.equal(
       scalar(db, `SELECT value FROM meta WHERE key = 'last_migration_id';`),
-      "legacy_captures_to_v3"
+      "legacy_captures_to_v4"
     );
 
     const chunkTypes = new Set(queryRows(db, `SELECT chunk_type FROM chunks;`).map((row) => row.chunk_type));
@@ -287,6 +291,7 @@ test("saveRecordToDbV2 writes document, capture, chunks, and graph rows", () => 
     assert.equal(scalar(db, `SELECT COUNT(*) FROM chunks;`), 5);
     assert.equal(scalar(db, `SELECT COUNT(*) FROM annotations;`), 2);
     assert.equal(scalar(db, `SELECT COUNT(*) FROM transcript_segments;`), 2);
+    assert.equal(scalar(db, `SELECT COUNT(*) FROM chunks WHERE chunk_index IS NULL;`), 0);
     assert.equal(scalar(db, `SELECT COUNT(*) FROM entities;`) >= 3, true);
     assert.equal(scalar(db, `SELECT COUNT(*) FROM edges;`) >= 2, true);
     assert.equal(scalar(db, `SELECT COUNT(*) FROM provenance;`) >= 2, true);
@@ -308,6 +313,20 @@ test("saveRecordToDbV2 writes document, capture, chunks, and graph rows", () => 
     assert.equal(countsByType.highlight, 1);
     assert.equal(countsByType.note, 1);
     assert.equal(countsByType.transcript_segment, 2);
+    assert.equal(
+      scalar(db, `SELECT COUNT(*) FROM chunks WHERE capture_id = 'capture-v2-1' AND chunk_index IS NULL;`),
+      0
+    );
+    const chunkIndexes = queryRows(
+      db,
+      `
+        SELECT chunk_index
+        FROM chunks
+        WHERE capture_id = 'capture-v2-1'
+        ORDER BY chunk_index ASC;
+      `
+    ).map((row) => Number(row.chunk_index));
+    assert.deepEqual(chunkIndexes, [0, 1, 2, 3, 4]);
 
     const captureRow = queryRows(
       db,
@@ -613,6 +632,7 @@ test("buildJsonChunksForRecord returns document, note/highlight, and transcript 
   assert.equal(chunks.some((chunk) => chunk.chunkType === "highlight"), true);
   assert.equal(chunks.some((chunk) => chunk.chunkType === "note"), true);
   assert.equal(chunks.some((chunk) => chunk.chunkType === "transcript_segment"), true);
+  assert.equal(chunks.every((chunk) => Number.isInteger(chunk.chunkIndex)), true);
   assert.equal(
     chunks.some(
       (chunk) => chunk.chunkType === "note" && chunk.text === "note-only item" && chunk.comment === "note-only item"

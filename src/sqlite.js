@@ -1,16 +1,16 @@
 import initSqlJs from "./vendor/sql-wasm.js";
 
 export const DEFAULT_DB_NAME = "context-captures.sqlite";
-export const SQLITE_DB_SCHEMA_VERSION = 3;
-export const SQLITE_DB_SCHEMA_NAME = "graph_v3";
+export const SQLITE_DB_SCHEMA_VERSION = 4;
+export const SQLITE_DB_SCHEMA_NAME = "graph_v4";
 
 const MAX_OFFSET_SCAN_CHARS = 200000;
 const DEFAULT_LIST_LIMIT = 20;
 const MAX_LIST_LIMIT = 200;
 const MAX_MIGRATION_HISTORY = 64;
-const MIGRATION_BOOTSTRAP_V3 = "bootstrap_v3";
-const MIGRATION_BACKFILL_V3 = "backfill_v3";
-const MIGRATION_LEGACY_TO_V3 = "legacy_captures_to_v3";
+const MIGRATION_BOOTSTRAP_V4 = "bootstrap_v4";
+const MIGRATION_LEGACY_TO_V4 = "legacy_captures_to_v4";
+const MIGRATION_ADD_CHUNK_INDEX = "chunk_index_backfill_v4";
 
 let sqlJsPromise;
 
@@ -330,6 +330,7 @@ function ensureCoreTablesV2(db) {
       text TEXT NOT NULL,
       comment TEXT NULL,
       created_at TEXT NOT NULL,
+      chunk_index INTEGER NULL,
       start_offset INTEGER NULL,
       end_offset INTEGER NULL,
       source_hash TEXT NULL,
@@ -341,6 +342,7 @@ function ensureCoreTablesV2(db) {
   db.run(`CREATE INDEX IF NOT EXISTS chunks_chunk_type ON chunks(chunk_type);`);
   db.run(`CREATE INDEX IF NOT EXISTS chunks_is_preview ON chunks(is_preview);`);
   db.run(`CREATE INDEX IF NOT EXISTS chunks_document_created_at ON chunks(document_id, created_at);`);
+  db.run(`CREATE INDEX IF NOT EXISTS chunks_capture_index ON chunks(capture_id, chunk_index);`);
 
   db.run(`
     CREATE TABLE IF NOT EXISTS annotations (
@@ -448,8 +450,52 @@ function ensureCoreTablesV2(db) {
   `);
 }
 
-function ensureSchemaColumnsV3(db) {
+function ensureSchemaColumnsV4(db) {
   ensureColumnInTable(db, "chunks", "is_preview", "INTEGER", "0");
+  ensureColumnInTable(db, "chunks", "chunk_index", "INTEGER", null);
+}
+
+function backfillChunkIndexes(db) {
+  if (!tableExists(db, "chunks")) {
+    return 0;
+  }
+
+  const rows = runSelectAll(
+    db,
+    `
+      SELECT chunk_id, capture_id, document_id
+      FROM chunks
+      ORDER BY
+        capture_id ASC,
+        created_at ASC,
+        chunk_id ASC;
+    `
+  );
+  if (rows.length === 0) {
+    return 0;
+  }
+
+  const updateStmt = db.prepare(`UPDATE chunks SET chunk_index = ? WHERE chunk_id = ?;`);
+  let previousGroup = null;
+  let nextIndex = 0;
+  let updated = 0;
+
+  try {
+    for (const row of rows) {
+      const groupKey = `${row.capture_id || "no-capture"}::${row.document_id || "no-document"}`;
+      if (groupKey !== previousGroup) {
+        previousGroup = groupKey;
+        nextIndex = 0;
+      }
+      updateStmt.run([nextIndex, row.chunk_id]);
+      nextIndex += 1;
+      updated += 1;
+    }
+  } finally {
+    updateStmt.free();
+  }
+
+  return updated;
 }
 
 function pruneOrphanGraphRows(db) {
@@ -853,6 +899,7 @@ function buildChunkRows(record, documentId, captureId) {
   const rows = [];
   const annotations = [];
   const transcriptSegments = [];
+  let chunkCursor = 0;
   const savedAt = normalizeIsoTimestamp(record?.savedAt);
   const content = record?.content || {};
   const documentText = typeof content.documentText === "string" ? content.documentText : null;
@@ -869,12 +916,14 @@ function buildChunkRows(record, documentId, captureId) {
         text: parsed.text,
         comment: null,
         created_at: savedAt,
+        chunk_index: chunkCursor,
         start_offset: parsed.start_offset,
         end_offset: parsed.end_offset,
         source_hash: normalizeNullableString(content.contentHash),
         is_preview: 0,
         search_text: parsed.text
       });
+      chunkCursor += 1;
     }
   }
 
@@ -923,12 +972,14 @@ function buildChunkRows(record, documentId, captureId) {
       text: chunkText,
       comment,
       created_at: normalizeIsoTimestamp(annotation?.createdAt, savedAt),
+      chunk_index: chunkCursor,
       start_offset: startOffset,
       end_offset: endOffset,
       source_hash: null,
       is_preview: 0,
       search_text: chunkText
     });
+    chunkCursor += 1;
     annotationIndex += 1;
   }
 
@@ -959,12 +1010,14 @@ function buildChunkRows(record, documentId, captureId) {
       text,
       comment: null,
       created_at: savedAt,
+      chunk_index: chunkCursor,
       start_offset: null,
       end_offset: null,
       source_hash: null,
       is_preview: 0,
       search_text: text
     });
+    chunkCursor += 1;
     transcriptIndex += 1;
   }
 
@@ -988,6 +1041,7 @@ export function buildJsonChunksForRecord(record, options = {}) {
     text: row.text ?? "",
     comment: row.comment ?? null,
     createdAt: row.created_at,
+    chunkIndex: row.chunk_index ?? null,
     startOffset: row.start_offset ?? null,
     endOffset: row.end_offset ?? null,
     sourceHash: row.source_hash ?? null
@@ -1062,11 +1116,12 @@ export function insertChunksV2(db, chunkRows) {
       text,
       comment,
       created_at,
+      chunk_index,
       start_offset,
       end_offset,
       source_hash,
       is_preview
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
   `);
 
   try {
@@ -1079,6 +1134,7 @@ export function insertChunksV2(db, chunkRows) {
         row.text ?? "",
         row.comment ?? null,
         row.created_at,
+        row.chunk_index ?? null,
         row.start_offset ?? null,
         row.end_offset ?? null,
         row.source_hash ?? null,
@@ -1680,7 +1736,11 @@ function backfillDerivedTablesFromExistingCaptures(db) {
           SELECT chunk_id, chunk_type, text, comment, created_at, start_offset, end_offset
           FROM chunks
           WHERE capture_id = ? AND chunk_type IN ('highlight', 'note')
-          ORDER BY created_at ASC, chunk_id ASC;
+          ORDER BY
+            CASE WHEN chunk_index IS NULL THEN 1 ELSE 0 END ASC,
+            chunk_index ASC,
+            created_at ASC,
+            chunk_id ASC;
         `,
         [captureId]
       );
@@ -1730,7 +1790,11 @@ function backfillDerivedTablesFromExistingCaptures(db) {
             SELECT chunk_id, text, created_at
             FROM chunks
             WHERE capture_id = ? AND chunk_type = 'transcript_segment'
-            ORDER BY created_at ASC, chunk_id ASC;
+            ORDER BY
+              CASE WHEN chunk_index IS NULL THEN 1 ELSE 0 END ASC,
+              chunk_index ASC,
+              created_at ASC,
+              chunk_id ASC;
           `,
           [captureId]
         );
@@ -1759,7 +1823,11 @@ function backfillDerivedTablesFromExistingCaptures(db) {
         SELECT *
         FROM chunks
         WHERE capture_id = ?
-        ORDER BY created_at ASC, chunk_id ASC;
+        ORDER BY
+          CASE WHEN chunk_index IS NULL THEN 1 ELSE 0 END ASC,
+          chunk_index ASC,
+          created_at ASC,
+          chunk_id ASC;
       `,
       [captureId]
     ).map((row) => ({
@@ -1838,21 +1906,24 @@ export function migrateLegacyToV2(db) {
 
   if (!hasLegacyNamedCaptures && !hasLegacyArchive) {
     ensureCoreTablesV2(db);
-    ensureSchemaColumnsV3(db);
+    ensureSchemaColumnsV4(db);
     const hadFts = hasFtsTable(db);
     const hasFts = ensureFtsIfPossible(db);
     backfillDerivedTablesFromExistingCaptures(db);
+    const chunkIndexesBackfilled = backfillChunkIndexes(db);
     pruneOrphanGraphRows(db);
     if (hasFts) {
       if (!hadFts || Number(scalarValue(db, `SELECT COUNT(*) FROM chunks_fts;`) || 0) === 0) {
         rebuildFtsFromChunks(db);
       }
     }
+    setMetaValue(db, "backfill_chunk_indexes", String(chunkIndexesBackfilled));
     setDbSchemaName(db, SQLITE_DB_SCHEMA_NAME);
     setDbSchemaVersion(db, SQLITE_DB_SCHEMA_VERSION);
     if (schemaVersionBefore < SQLITE_DB_SCHEMA_VERSION) {
-      recordMigration(db, MIGRATION_BOOTSTRAP_V3, {
-        legacy_rows_migrated: 0
+      recordMigration(db, schemaVersionBefore === 0 ? MIGRATION_BOOTSTRAP_V4 : MIGRATION_ADD_CHUNK_INDEX, {
+        legacy_rows_migrated: 0,
+        chunk_indexes_backfilled: chunkIndexesBackfilled
       });
     }
     return 0;
@@ -1865,7 +1936,7 @@ export function migrateLegacyToV2(db) {
     }
 
     ensureCoreTablesV2(db);
-    ensureSchemaColumnsV3(db);
+    ensureSchemaColumnsV4(db);
     const hadFts = hasFtsTable(db);
     const hasFts = ensureFtsIfPossible(db);
 
@@ -1885,6 +1956,7 @@ export function migrateLegacyToV2(db) {
     }
 
     backfillDerivedTablesFromExistingCaptures(db);
+    const chunkIndexesBackfilled = backfillChunkIndexes(db);
     pruneOrphanGraphRows(db);
     if (hasFts) {
       if (!hadFts || Number(scalarValue(db, `SELECT COUNT(*) FROM chunks_fts;`) || 0) === 0) {
@@ -1895,8 +1967,10 @@ export function migrateLegacyToV2(db) {
     setDbSchemaVersion(db, SQLITE_DB_SCHEMA_VERSION);
     setMetaValue(db, "legacy_migrated_from", "captures_legacy");
     setMetaValue(db, "legacy_migrated_at", new Date().toISOString());
-    recordMigration(db, MIGRATION_LEGACY_TO_V3, {
-      legacy_rows_migrated: migrated
+    setMetaValue(db, "backfill_chunk_indexes", String(chunkIndexesBackfilled));
+    recordMigration(db, MIGRATION_LEGACY_TO_V4, {
+      legacy_rows_migrated: migrated,
+      chunk_indexes_backfilled: chunkIndexesBackfilled
     });
     db.run("COMMIT;");
     return migrated;
@@ -1924,13 +1998,14 @@ export function ensureSchemaV2(db) {
   }
 
   ensureCoreTablesV2(db);
-  ensureSchemaColumnsV3(db);
+  ensureSchemaColumnsV4(db);
   const hadFts = hasFtsTable(db);
   const hasFts = ensureFtsIfPossible(db);
   if (schemaVersion < SQLITE_DB_SCHEMA_VERSION) {
     db.run("BEGIN;");
     try {
       const backfillStats = backfillDerivedTablesFromExistingCaptures(db);
+      const chunkIndexesBackfilled = backfillChunkIndexes(db);
       pruneOrphanGraphRows(db);
       setMetaValue(db, "backfill_annotations", String(backfillStats.annotationsBackfilled || 0));
       setMetaValue(
@@ -1939,14 +2014,16 @@ export function ensureSchemaV2(db) {
         String(backfillStats.transcriptSegmentsBackfilled || 0)
       );
       setMetaValue(db, "backfill_graph_rows", String(backfillStats.graphBackfilled || 0));
+      setMetaValue(db, "backfill_chunk_indexes", String(chunkIndexesBackfilled));
       setMetaValue(db, "backfill_completed_at", new Date().toISOString());
       setMetaValue(db, "backfill_fts_rows", String(hasFts ? rebuildFtsFromChunks(db) : 0));
       setDbSchemaName(db, SQLITE_DB_SCHEMA_NAME);
       setDbSchemaVersion(db, SQLITE_DB_SCHEMA_VERSION);
-      recordMigration(db, schemaVersion === 0 ? MIGRATION_BOOTSTRAP_V3 : MIGRATION_BACKFILL_V3, {
+      recordMigration(db, schemaVersion === 0 ? MIGRATION_BOOTSTRAP_V4 : MIGRATION_ADD_CHUNK_INDEX, {
         annotations_backfilled: backfillStats.annotationsBackfilled || 0,
         transcript_segments_backfilled: backfillStats.transcriptSegmentsBackfilled || 0,
-        graph_rows_backfilled: backfillStats.graphBackfilled || 0
+        graph_rows_backfilled: backfillStats.graphBackfilled || 0,
+        chunk_indexes_backfilled: chunkIndexesBackfilled
       });
       db.run("COMMIT;");
     } catch (error) {
@@ -2136,7 +2213,11 @@ export function searchChunksByText(db, query, limit = DEFAULT_LIST_LIMIT) {
           INNER JOIN chunks c ON c.chunk_id = f.chunk_id
           INNER JOIN documents d ON d.document_id = c.document_id
           WHERE chunks_fts MATCH ?
-          ORDER BY bm25(chunks_fts), c.created_at DESC
+          ORDER BY
+            bm25(chunks_fts),
+            CASE WHEN c.chunk_index IS NULL THEN 1 ELSE 0 END ASC,
+            c.chunk_index ASC,
+            c.created_at DESC
           LIMIT ?;
         `,
         [normalizedQuery, normalizedLimit]
@@ -2159,7 +2240,10 @@ export function searchChunksByText(db, query, limit = DEFAULT_LIST_LIMIT) {
       INNER JOIN documents d ON d.document_id = c.document_id
       WHERE c.text LIKE ? ESCAPE '\\'
         OR COALESCE(c.comment, '') LIKE ? ESCAPE '\\'
-      ORDER BY c.created_at DESC
+      ORDER BY
+        c.created_at DESC,
+        CASE WHEN c.chunk_index IS NULL THEN 1 ELSE 0 END ASC,
+        c.chunk_index ASC
       LIMIT ?;
     `,
     [pattern, pattern, normalizedLimit]
@@ -2186,7 +2270,11 @@ export function getDocumentContext(db, documentId) {
       SELECT c.*
       FROM chunks c
       WHERE c.document_id = ?
-      ORDER BY c.created_at ASC, c.chunk_id ASC;
+      ORDER BY
+        CASE WHEN c.chunk_index IS NULL THEN 1 ELSE 0 END ASC,
+        c.chunk_index ASC,
+        c.created_at ASC,
+        c.chunk_id ASC;
     `,
     [normalizedId]
   ).map(mapChunkRow);
