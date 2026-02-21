@@ -14,6 +14,12 @@ import { isYouTubeVideoUrl } from "./url-helpers.js";
 import { buildJsonSubdirectories, formatStoredPath } from "./json-paths.js";
 import { resolveStorageBackendWrites } from "./storage-backend.js";
 import {
+  describeRuntimeCapabilities,
+  getClipboardFallbackGuidance,
+  getPdfFallbackGuidance,
+  supportsOffscreenApi
+} from "./runtime-capabilities.js";
+import {
   ensureReadWritePermission,
   getSavedDirectoryHandle,
   writeJsonToDirectory
@@ -478,7 +484,14 @@ async function resolveSelection(tabId, selectionOverride = "", options = {}) {
   if (allowClipboardCopy) {
     const copied = await copySelectionFromPage(tabId);
     if (copied) {
-      return await readClipboardTextViaOffscreen();
+      const fromOffscreen = await readClipboardTextViaOffscreen();
+      if (fromOffscreen) {
+        return fromOffscreen;
+      }
+      const fromPageClipboard = await readClipboardTextFromPage(tabId);
+      if (fromPageClipboard) {
+        return fromPageClipboard;
+      }
     }
   }
 
@@ -812,7 +825,7 @@ async function handleAddNote(tabId, selectionOverride = "") {
 }
 
 async function ensureOffscreenDocument() {
-  if (!chrome.offscreen?.createDocument) {
+  if (!supportsOffscreenApi(chrome)) {
     return false;
   }
 
@@ -1181,8 +1194,12 @@ async function handlePdfCapture(
 
   const resolvedUrl = resolvePdfUrl(tab.url) || tab.url;
   const likelyPdf = isLikelyPdfUrl(resolvedUrl);
+  const capabilities = describeRuntimeCapabilities(chrome);
   let pdfData;
   try {
+    if (!capabilities.offscreen) {
+      throw new Error("Offscreen document unavailable");
+    }
     pdfData = await extractPdfViaOffscreen(resolvedUrl, likelyPdf);
   } catch (_offscreenError) {
     try {
@@ -1191,7 +1208,9 @@ async function handlePdfCapture(
         disableWorker: true
       });
     } catch (_moduleError) {
-      throw new Error("PDF extraction failed in both offscreen and worker contexts.");
+      throw new Error(
+        `PDF extraction failed in both offscreen and worker contexts. ${getPdfFallbackGuidance()}`
+      );
     }
   }
   const url = resolvedUrl;
@@ -1251,7 +1270,9 @@ async function handlePdfCapture(
     },
     diagnostics: {
       missingFields: ["publishedAt"],
-      selectionSource: resolvedSelection.source
+      selectionSource: resolvedSelection.source,
+      runtimeCapabilities: capabilities,
+      clipboardFallbackGuidance: getClipboardFallbackGuidance()
     }
   });
 

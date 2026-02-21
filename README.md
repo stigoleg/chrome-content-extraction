@@ -33,6 +33,25 @@ Context Capture Saver is designed for research and AI workflows where you want s
 - Chrome/Chromium (Manifest V3)
 - Firefox build output included in the same pipeline
 
+### Firefox Differences
+
+- `chrome.offscreen` is not always available; the extension now detects this and uses module-based fallbacks for PDF extraction.
+- Clipboard-assisted fallback paths can be more limited on Firefox; on-page selection remains the primary workflow.
+- Runtime capability info is captured in diagnostics for PDF captures when diagnostics are enabled.
+
+### Firefox Verification Checklist
+
+- Manual:
+  - Verify context menus toggle between regular and YouTube actions based on tab URL.
+  - Verify PDF capture works with module fallback on Firefox.
+  - Verify highlight/note queueing works on regular pages and PDF pages.
+  - Verify JSON, SQLite, and JSON+SQLite save modes all write successfully.
+  - Verify bubble menu actions work and update after settings changes.
+- Automated:
+  - Run `npm run check`
+  - Run `npm run typecheck`
+  - Run `npm test`
+
 ## Install
 
 ### Option 1: Release Artifacts

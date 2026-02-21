@@ -173,6 +173,13 @@ Desired result: Firefox path is fully usable with explicit fallbacks and clear U
 - [ ] Update README for browser differences.
 - [ ] Run `npm run check`, `npm run typecheck`, and `npm test`; resolve failures.
 - [ ] Commit with a short message, e.g. `firefox: harden api fallback paths`.
+- [x] Audit all `chrome.offscreen` dependent flows.
+- [x] Implement fallback logic for PDF and clipboard paths.
+- [x] Add capability detection + user-visible guidance.
+- [x] Add Firefox manual/automated verification checklist.
+- [x] Update README for browser differences.
+- [x] Run `npm run check`, `npm run typecheck`, and `npm test`; resolve failures.
+- [x] Commit with a short message, e.g. `firefox: harden api fallback paths`.
 
 ## 13. Add highlight rendering fallback when CSS Highlights is missing
 Description: Preserve queued highlight visibility where CSS Highlights API is not supported.
