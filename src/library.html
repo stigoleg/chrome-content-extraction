@@ -101,12 +101,30 @@
           <header class="pane-header">
             <h2>Capture Detail</h2>
             <div class="detail-header-actions">
+              <button id="editCaptureButton" type="button" class="ghost">Edit</button>
+              <button id="saveCaptureEditsButton" type="button" hidden>Save edits</button>
+              <button id="cancelCaptureEditsButton" type="button" class="ghost" hidden>Cancel</button>
               <button id="openContextButton" type="button" class="ghost">Document context</button>
               <p id="detailMeta" class="muted">Select a capture to inspect details.</p>
             </div>
           </header>
           <section id="detailContent" class="detail-content">
             <p class="empty-message">No capture selected.</p>
+          </section>
+          <section id="editPanel" class="edit-panel" hidden>
+            <label class="field">
+              <span>Title</span>
+              <input id="editTitleInput" type="text" placeholder="Capture title" />
+            </label>
+            <div class="edit-panel__header">
+              <p class="edit-panel__title">Highlights and notes</p>
+              <div class="edit-panel__actions">
+                <button id="addHighlightEditButton" type="button" class="ghost">Add highlight</button>
+                <button id="addNoteEditButton" type="button" class="ghost">Add note</button>
+              </div>
+            </div>
+            <ul id="editAnnotationsList" class="edit-annotations-list"></ul>
+            <p id="editPanelHint" class="muted"></p>
           </section>
         </article>
       </section>

@@ -36,12 +36,12 @@ Desired result: Users can inspect complete provenance-aware context for any docu
 ## 4. Post-save editing
 Description: Allow users to correct metadata and notes after capture.
 Desired result: Safe post-save edits without breaking schema integrity or provenance links.
-- [ ] Add edit UI for title/highlights/notes.
-- [ ] Implement synchronized update path for JSON and SQLite outputs.
-- [ ] Add edit metadata (`edited_at`, optional editor version).
-- [ ] Add conflict handling for stale edits.
-- [ ] Add tests for edit + rollback scenarios.
-- [ ] Run `npm run check`, `npm run typecheck`, and `npm test`; resolve failures.
+- [x] Add edit UI for title/highlights/notes.
+- [x] Implement synchronized update path for JSON and SQLite outputs.
+- [x] Add edit metadata (`edited_at`, optional editor version).
+- [x] Add conflict handling for stale edits.
+- [x] Add tests for edit + rollback scenarios.
+- [x] Run `npm run check`, `npm run typecheck`, and `npm test`; resolve failures.
 - [ ] Commit with a short message, e.g. `feature: add post-save editing`.
 
 ## 5. Tags and collections

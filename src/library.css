@@ -282,6 +282,78 @@ button.ghost {
   gap: 12px;
 }
 
+.edit-panel {
+  border-top: 1px solid #e0e7f1;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+  background: #f8fbff;
+}
+
+.edit-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.edit-panel__title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: #30486b;
+}
+
+.edit-panel__actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.edit-annotations-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.edit-annotation-item {
+  border: 1px solid #d6dfea;
+  border-radius: 10px;
+  background: #fff;
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.edit-annotation-item__meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.edit-annotation-item__type {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.edit-annotation-item textarea {
+  width: 100%;
+  min-height: 60px;
+  resize: vertical;
+  border: 1px solid #cbd5e2;
+  border-radius: 8px;
+  padding: 8px;
+  font: inherit;
+  color: var(--text);
+}
+
 .chunk-search-pane {
   display: grid;
   grid-template-rows: auto auto 1fr;

@@ -9,13 +9,19 @@ import {
 import { buildContextExportPayload, groupChunksByType } from "./document-context.js";
 import { resolveStorageBackendWrites } from "./storage-backend.js";
 import { getSavedDirectoryHandle } from "./storage.js";
+import { validateCaptureRecord } from "./schema.js";
+import { writeFileHandleWithRetry } from "./write-retry.js";
 import {
+  buildJsonChunksForRecord,
   DEFAULT_DB_NAME,
+  getCaptureEditVersion,
+  getCaptureForEditing,
   hasChunkFtsIndex,
   getDocumentContext,
   listRecentCaptures,
   openSqliteFromDirectoryHandle,
-  searchChunksByText
+  searchChunksByText,
+  updateCaptureInDb
 } from "./sqlite.js";
 
 const MAX_SQLITE_SCAN = 10000;
@@ -23,6 +29,7 @@ const SQLITE_BATCH_SIZE = 250;
 const MAX_JSON_SCAN = 2000;
 const SEARCH_DEBOUNCE_MS = 180;
 const CHUNK_SEARCH_LIMIT = 40;
+const EDITOR_VERSION = "library-ui-v1";
 
 /** @type {HTMLButtonElement} */
 const refreshButton = /** @type {HTMLButtonElement} */ (document.getElementById("refreshButton"));
@@ -80,6 +87,30 @@ const copyContextButton = /** @type {HTMLButtonElement} */ (document.getElementB
 const exportContextButton = /** @type {HTMLButtonElement} */ (document.getElementById("exportContextButton"));
 /** @type {HTMLButtonElement} */
 const closeContextButton = /** @type {HTMLButtonElement} */ (document.getElementById("closeContextButton"));
+/** @type {HTMLButtonElement} */
+const editCaptureButton = /** @type {HTMLButtonElement} */ (document.getElementById("editCaptureButton"));
+/** @type {HTMLButtonElement} */
+const saveCaptureEditsButton = /** @type {HTMLButtonElement} */ (
+  document.getElementById("saveCaptureEditsButton")
+);
+/** @type {HTMLButtonElement} */
+const cancelCaptureEditsButton = /** @type {HTMLButtonElement} */ (
+  document.getElementById("cancelCaptureEditsButton")
+);
+/** @type {HTMLElement} */
+const editPanel = /** @type {HTMLElement} */ (document.getElementById("editPanel"));
+/** @type {HTMLInputElement} */
+const editTitleInput = /** @type {HTMLInputElement} */ (document.getElementById("editTitleInput"));
+/** @type {HTMLButtonElement} */
+const addHighlightEditButton = /** @type {HTMLButtonElement} */ (
+  document.getElementById("addHighlightEditButton")
+);
+/** @type {HTMLButtonElement} */
+const addNoteEditButton = /** @type {HTMLButtonElement} */ (document.getElementById("addNoteEditButton"));
+/** @type {HTMLUListElement} */
+const editAnnotationsList = /** @type {HTMLUListElement} */ (document.getElementById("editAnnotationsList"));
+/** @type {HTMLElement} */
+const editPanelHint = /** @type {HTMLElement} */ (document.getElementById("editPanelHint"));
 
 const state = {
   directoryHandle: null,
@@ -104,7 +135,10 @@ const state = {
   detailRequestId: 0,
   warnings: [],
   selectedSummary: null,
-  activeContext: null
+  activeContext: null,
+  editMode: false,
+  editBaselineVersionByKey: new Map(),
+  editDraft: null
 };
 
 let searchDebounceTimer = 0;
@@ -161,6 +195,171 @@ function captureKey(summary) {
     return `json:${summary.storagePath}`;
   }
   return `sqlite:${summary.captureId}`;
+}
+
+function normalizeAnnotationDraft(annotation, index = 0) {
+  const selectedText = String(annotation?.selectedText || annotation?.selected_text || "").trim();
+  const commentRaw = annotation?.comment;
+  const comment = commentRaw === undefined || commentRaw === null ? "" : String(commentRaw);
+  return {
+    id: String(annotation?.id || annotation?.annotation_id || `draft-${Date.now()}-${index}`),
+    selectedText,
+    comment,
+    createdAt: String(annotation?.createdAt || annotation?.created_at || new Date().toISOString())
+  };
+}
+
+function buildEditableAnnotations(detail) {
+  if (Array.isArray(detail?.annotations) && detail.annotations.length) {
+    return detail.annotations.map(normalizeAnnotationDraft).filter((entry) => entry.selectedText || entry.comment);
+  }
+
+  if (!Array.isArray(detail?.chunks)) {
+    return [];
+  }
+
+  return detail.chunks
+    .filter((chunk) => chunk.chunk_type === "highlight" || chunk.chunk_type === "note")
+    .map((chunk, index) =>
+      normalizeAnnotationDraft(
+        {
+          annotation_id: chunk.chunk_id || `chunk-annotation-${index}`,
+          selected_text: chunk.text || "",
+          comment: chunk.comment || "",
+          created_at: chunk.created_at || detail?.savedAt || new Date().toISOString()
+        },
+        index
+      )
+    )
+    .filter((entry) => entry.selectedText || entry.comment);
+}
+
+function findCounterpartCapture(summary) {
+  if (!summary?.captureId) {
+    return null;
+  }
+  return (
+    state.captures.find(
+      (capture) => capture.captureId === summary.captureId && capture.backend !== summary.backend
+    ) || null
+  );
+}
+
+function setEditButtonsDisabled(disabled) {
+  saveCaptureEditsButton.disabled = disabled;
+  cancelCaptureEditsButton.disabled = disabled;
+  addHighlightEditButton.disabled = disabled;
+  addNoteEditButton.disabled = disabled;
+  editTitleInput.disabled = disabled;
+  const textareas = editAnnotationsList.querySelectorAll("textarea");
+  for (const textarea of textareas) {
+    textarea.disabled = disabled;
+  }
+  const buttons = editAnnotationsList.querySelectorAll("button");
+  for (const button of buttons) {
+    button.disabled = disabled;
+  }
+}
+
+function leaveEditMode() {
+  state.editMode = false;
+  state.editDraft = null;
+  editPanel.hidden = true;
+  editAnnotationsList.textContent = "";
+  editPanelHint.textContent = "";
+  editCaptureButton.hidden = false;
+  saveCaptureEditsButton.hidden = true;
+  cancelCaptureEditsButton.hidden = true;
+  setEditButtonsDisabled(false);
+}
+
+function renderEditPanel() {
+  if (!state.editMode || !state.editDraft) {
+    leaveEditMode();
+    return;
+  }
+
+  editPanel.hidden = false;
+  editCaptureButton.hidden = true;
+  saveCaptureEditsButton.hidden = false;
+  cancelCaptureEditsButton.hidden = false;
+  editTitleInput.value = state.editDraft.title || "";
+  editAnnotationsList.textContent = "";
+
+  state.editDraft.annotations.forEach((annotation) => {
+    const item = document.createElement("li");
+    item.className = "edit-annotation-item";
+    item.dataset.annotationId = annotation.id;
+
+    const meta = document.createElement("div");
+    meta.className = "edit-annotation-item__meta";
+
+    const typeLabel = document.createElement("span");
+    typeLabel.className = "edit-annotation-item__type";
+    typeLabel.textContent = annotation.comment.trim() ? "Note" : "Highlight";
+
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.className = "ghost";
+    removeButton.textContent = "Delete";
+    removeButton.addEventListener("click", () => {
+      state.editDraft.annotations = state.editDraft.annotations.filter((entry) => entry.id !== annotation.id);
+      renderEditPanel();
+    });
+
+    meta.append(typeLabel, removeButton);
+
+    const selectedTextArea = document.createElement("textarea");
+    selectedTextArea.value = annotation.selectedText;
+    selectedTextArea.placeholder = "Selected text";
+    selectedTextArea.addEventListener("input", () => {
+      const target = state.editDraft.annotations.find((entry) => entry.id === annotation.id);
+      if (!target) {
+        return;
+      }
+      target.selectedText = selectedTextArea.value;
+    });
+
+    const commentArea = document.createElement("textarea");
+    commentArea.value = annotation.comment;
+    commentArea.placeholder = "Optional note";
+    commentArea.addEventListener("input", () => {
+      const target = state.editDraft.annotations.find((entry) => entry.id === annotation.id);
+      if (!target) {
+        return;
+      }
+      target.comment = commentArea.value;
+      typeLabel.textContent = target.comment.trim() ? "Note" : "Highlight";
+    });
+
+    item.append(meta, selectedTextArea, commentArea);
+    editAnnotationsList.appendChild(item);
+  });
+
+  editPanelHint.textContent = `${state.editDraft.annotations.length} annotation${
+    state.editDraft.annotations.length === 1 ? "" : "s"
+  } queued.`;
+}
+
+async function resolveEditVersionForSummary(summary) {
+  if (!summary) {
+    return null;
+  }
+
+  if (summary.backend === "sqlite") {
+    if (!state.sqliteSession?.db) {
+      return null;
+    }
+    return getCaptureEditVersion(state.sqliteSession.db, summary.captureId);
+  }
+
+  const descriptor = state.jsonDescriptors.get(summary._key);
+  if (!descriptor) {
+    return null;
+  }
+  const { lastModified } = await readJsonRecordByDescriptor(descriptor, { withMetadata: true });
+  descriptor.lastModified = lastModified;
+  return String(lastModified);
 }
 
 function parseDocumentRoute() {
@@ -235,6 +434,9 @@ function renderCaptureList(pageResult) {
 
     item.append(title, meta, path);
     item.addEventListener("click", () => {
+      if (state.selectedKey !== summary._key) {
+        leaveEditMode();
+      }
       state.selectedKey = summary._key;
       renderLibrary();
       loadAndRenderDetail(summary).catch((error) => {
@@ -527,7 +729,8 @@ async function discoverJsonDescriptors(directoryHandle) {
       descriptors.push({
         fileName: name,
         pathSegments: [...current.pathSegments],
-        storagePath: [...current.pathSegments, name].join("/")
+        storagePath: [...current.pathSegments, name].join("/"),
+        lastModified: null
       });
 
       if (descriptors.length >= MAX_JSON_SCAN) {
@@ -545,7 +748,7 @@ async function discoverJsonDescriptors(directoryHandle) {
   };
 }
 
-async function readJsonRecordByDescriptor(descriptor) {
+async function readJsonRecordByDescriptor(descriptor, options = {}) {
   if (!state.directoryHandle) {
     throw new Error("Directory handle unavailable");
   }
@@ -557,7 +760,17 @@ async function readJsonRecordByDescriptor(descriptor) {
   const fileHandle = await current.getFileHandle(descriptor.fileName, { create: false });
   const file = await fileHandle.getFile();
   const text = await file.text();
-  return JSON.parse(text);
+  const record = JSON.parse(text);
+  if (options.withMetadata === true) {
+    return {
+      record,
+      fileHandle,
+      fileName: descriptor.fileName,
+      pathSegments: [...descriptor.pathSegments],
+      lastModified: file.lastModified
+    };
+  }
+  return record;
 }
 
 async function loadJsonCaptures(directoryHandle) {
@@ -570,13 +783,15 @@ async function loadJsonCaptures(directoryHandle) {
     const descriptor = descriptors[index];
 
     try {
-      const record = await readJsonRecordByDescriptor(descriptor);
+      const jsonEntry = await readJsonRecordByDescriptor(descriptor, { withMetadata: true });
+      const record = jsonEntry.record;
       if (!record?.id || !record?.captureType || !record?.savedAt) {
         continue;
       }
       const summary = buildCaptureSummaryFromJsonRecord(record, descriptor.storagePath);
       summary._key = captureKey(summary);
       captures.push(summary);
+      descriptor.lastModified = jsonEntry.lastModified;
       state.jsonDescriptors.set(summary._key, descriptor);
     } catch (_error) {
       continue;
@@ -626,12 +841,15 @@ function renderLibrary() {
     }
     detailMeta.textContent = `${selected.captureType || "capture"} · ${formatDate(selected.savedAt)}`;
     openContextButton.disabled = !(selected.backend === "sqlite" && selected.documentId);
+    editCaptureButton.disabled = false;
   } else {
     state.selectedKey = "";
     state.selectedSummary = null;
     detailMeta.textContent = "Select a capture to inspect details.";
     detailContent.innerHTML = '<p class="empty-message">No capture selected.</p>';
     openContextButton.disabled = true;
+    editCaptureButton.disabled = true;
+    leaveEditMode();
   }
 }
 
@@ -720,13 +938,22 @@ async function buildSqliteDetail(summary) {
       (!chunk.capture_id && chunk.document_id === summary.documentId)
   );
 
+  const editable = getCaptureForEditing(state.sqliteSession.db, summary.captureId);
+  const annotations = buildEditableAnnotations({
+    annotations: editable?.record?.content?.annotations || []
+  });
+
   return {
     documentText: capture?.document_text || "",
     transcriptSegments: Array.isArray(capture?.transcript_segments)
       ? capture.transcript_segments
       : [],
     diagnostics: capture?.diagnostics || null,
-    chunks
+    chunks,
+    annotations,
+    sourceTitle: editable?.record?.source?.title || capture?.document_title || "",
+    editVersion: editable?.editVersion || getCaptureEditVersion(state.sqliteSession.db, summary.captureId),
+    record: editable?.record || null
   };
 }
 
@@ -736,7 +963,8 @@ async function buildJsonDetail(summary) {
     return null;
   }
 
-  const record = await readJsonRecordByDescriptor(descriptor);
+  const { record, lastModified } = await readJsonRecordByDescriptor(descriptor, { withMetadata: true });
+  descriptor.lastModified = lastModified;
   const chunks = Array.isArray(record?.content?.chunks)
     ? record.content.chunks.map((chunk, index) => ({
         chunk_id: `${record.id || "json"}-chunk-${index}`,
@@ -753,7 +981,11 @@ async function buildJsonDetail(summary) {
       ? record.content.transcriptSegments
       : [],
     diagnostics: record?.diagnostics || null,
-    chunks
+    chunks,
+    annotations: buildEditableAnnotations({ annotations: record?.content?.annotations || [] }),
+    sourceTitle: record?.source?.title || "",
+    editVersion: String(lastModified),
+    record
   };
 }
 
@@ -788,10 +1020,222 @@ async function loadAndRenderDetail(summary) {
   state.detailCache.set(summary._key, detail);
   if (state.detailRequestId === requestId) {
     renderDetail(detail, summary);
+    if (state.editMode && state.editDraft?.summaryKey === summary._key) {
+      renderEditPanel();
+    }
+  }
+}
+
+async function beginEditForSelectedCapture() {
+  const summary = state.selectedSummary;
+  if (!summary) {
+    return;
+  }
+
+  let detail = state.detailCache.get(summary._key);
+  if (!detail) {
+    await loadAndRenderDetail(summary);
+    detail = state.detailCache.get(summary._key);
+  }
+  if (!detail) {
+    setStatus("Capture detail is unavailable for editing.", "warning");
+    return;
+  }
+
+  const counterpart = findCounterpartCapture(summary);
+  const targets = [summary];
+  if (counterpart) {
+    targets.push(counterpart);
+  }
+
+  const baselineVersions = new Map();
+  for (const target of targets) {
+    const version = await resolveEditVersionForSummary(target);
+    if (version) {
+      baselineVersions.set(target._key, version);
+      state.editBaselineVersionByKey.set(target._key, version);
+    }
+  }
+
+  state.editMode = true;
+  state.editDraft = {
+    summaryKey: summary._key,
+    title: String(detail.sourceTitle || summary.sourceTitle || ""),
+    annotations: buildEditableAnnotations(detail),
+    targetKeys: targets.map((target) => target._key),
+    baselineVersions
+  };
+  renderEditPanel();
+}
+
+function addDraftAnnotation(withNote = false) {
+  if (!state.editMode || !state.editDraft) {
+    return;
+  }
+  state.editDraft.annotations.push(
+    normalizeAnnotationDraft({
+      id: `draft-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      selectedText: "",
+      comment: withNote ? "Add note" : "",
+      createdAt: new Date().toISOString()
+    })
+  );
+  renderEditPanel();
+}
+
+function collectDraftEdits() {
+  if (!state.editDraft) {
+    return null;
+  }
+  const title = editTitleInput.value.trim();
+  const annotations = state.editDraft.annotations
+    .map((annotation) => normalizeAnnotationDraft(annotation))
+    .filter((annotation) => annotation.selectedText || annotation.comment);
+  return {
+    title: title || null,
+    annotations: annotations.length ? annotations : null
+  };
+}
+
+async function writeJsonRecordEdit(targetSummary, edits, expectedVersion) {
+  const descriptor = state.jsonDescriptors.get(targetSummary._key);
+  if (!descriptor) {
+    throw new Error("JSON descriptor not found for selected capture.");
+  }
+  const jsonEntry = await readJsonRecordByDescriptor(descriptor, { withMetadata: true });
+  if (
+    expectedVersion &&
+    String(jsonEntry.lastModified) !== String(expectedVersion)
+  ) {
+    const error = /** @type {any} */ (new Error("Capture was modified elsewhere. Reload and try again."));
+    error.code = "STALE_EDIT";
+    throw error;
+  }
+
+  const record = {
+    ...jsonEntry.record,
+    source: {
+      ...(jsonEntry.record?.source || {}),
+      title:
+        edits.title ||
+        String(jsonEntry.record?.source?.title || targetSummary.sourceTitle || "Untitled")
+    },
+    content: {
+      ...(jsonEntry.record?.content || {}),
+      annotations: edits.annotations
+    },
+    editMetadata: {
+      editedAt: new Date().toISOString(),
+      editorVersion: EDITOR_VERSION
+    }
+  };
+
+  const settings = await getSettings();
+  const shouldUpdateChunks = settings.includeJsonChunks === true || Array.isArray(record?.content?.chunks);
+  if (shouldUpdateChunks) {
+    record.content.chunks = buildJsonChunksForRecord(record);
+  }
+
+  const validation = validateCaptureRecord(record);
+  if (!validation.valid) {
+    throw new Error(`Edited JSON record failed validation: ${validation.errors.join(", ")}`);
+  }
+
+  await writeFileHandleWithRetry(
+    jsonEntry.fileHandle,
+    `${JSON.stringify(record, null, 2)}\n`,
+    { target: descriptor.storagePath }
+  );
+  const persisted = await jsonEntry.fileHandle.getFile();
+  descriptor.lastModified = persisted.lastModified;
+  state.editBaselineVersionByKey.set(targetSummary._key, String(persisted.lastModified));
+}
+
+async function writeSqliteRecordEdit(targetSummary, edits, expectedVersion) {
+  if (!state.sqliteSession?.db || !state.sqliteSession?.fileHandle) {
+    throw new Error("SQLite session is unavailable.");
+  }
+
+  const result = updateCaptureInDb(
+    state.sqliteSession.db,
+    targetSummary.captureId,
+    {
+      title: edits.title,
+      annotations: edits.annotations
+    },
+    {
+      ensureSchema: false,
+      useTransaction: true,
+      expectedVersion,
+      editorVersion: EDITOR_VERSION
+    }
+  );
+  const binaryArray = state.sqliteSession.db.export();
+  await writeFileHandleWithRetry(state.sqliteSession.fileHandle, binaryArray, { target: DEFAULT_DB_NAME });
+  if (result.editVersion) {
+    state.editBaselineVersionByKey.set(targetSummary._key, result.editVersion);
+  }
+}
+
+async function saveCurrentEditDraft() {
+  if (!state.editMode || !state.editDraft || !state.selectedSummary) {
+    return;
+  }
+
+  const edits = collectDraftEdits();
+  if (!edits) {
+    return;
+  }
+
+  const targets = state.editDraft.targetKeys
+    .map((key) => state.captures.find((capture) => capture._key === key))
+    .filter(Boolean);
+  if (!targets.length) {
+    setStatus("No matching capture targets found for edit.", "warning");
+    return;
+  }
+
+  setEditButtonsDisabled(true);
+  saveCaptureEditsButton.textContent = "Saving...";
+  const selectedCaptureId = state.selectedSummary.captureId;
+
+  try {
+    for (const target of targets) {
+      const expectedVersion = state.editDraft.baselineVersions.get(target._key) || null;
+      if (target.backend === "sqlite") {
+        await writeSqliteRecordEdit(target, edits, expectedVersion);
+      } else {
+        await writeJsonRecordEdit(target, edits, expectedVersion);
+      }
+    }
+
+    leaveEditMode();
+    state.detailCache.clear();
+    await loadLibraryData();
+    const selectedAfterSave =
+      state.captures.find((capture) => capture.captureId === selectedCaptureId) || null;
+    if (selectedAfterSave) {
+      state.selectedKey = selectedAfterSave._key;
+      renderLibrary();
+      await loadAndRenderDetail(selectedAfterSave);
+    }
+    setStatus("Capture edits saved successfully.", "ok");
+  } catch (error) {
+    if (error?.code === "STALE_EDIT") {
+      setStatus("Edit conflict detected. Reload and apply changes again.", "warning");
+    } else {
+      setStatus(error?.message || "Failed to save edits.", "error");
+    }
+  } finally {
+    saveCaptureEditsButton.textContent = "Save edits";
+    setEditButtonsDisabled(false);
   }
 }
 
 function onFilterChanged() {
+  if (state.editMode) {
+    leaveEditMode();
+  }
   state.filters.captureType = typeFilter.value;
   state.filters.site = siteFilter.value;
   state.filters.fromDate = fromDateInput.value;
@@ -838,6 +1282,8 @@ function handleChunkSearchChanged() {
 async function loadLibraryData() {
   setStatus("Loading capture library...");
 
+  leaveEditMode();
+  state.editBaselineVersionByKey.clear();
   state.detailCache.clear();
   state.jsonDescriptors.clear();
   state.warnings = [];
@@ -928,6 +1374,37 @@ refreshButton.addEventListener("click", () => {
 
 openSettingsButton.addEventListener("click", () => {
   chrome.runtime.openOptionsPage();
+});
+
+editCaptureButton.addEventListener("click", () => {
+  beginEditForSelectedCapture().catch((error) => {
+    setStatus(error?.message || "Failed to start editing mode.", "error");
+  });
+});
+
+saveCaptureEditsButton.addEventListener("click", () => {
+  saveCurrentEditDraft().catch((error) => {
+    setStatus(error?.message || "Failed to save edits.", "error");
+  });
+});
+
+cancelCaptureEditsButton.addEventListener("click", () => {
+  leaveEditMode();
+});
+
+addHighlightEditButton.addEventListener("click", () => {
+  addDraftAnnotation(false);
+});
+
+addNoteEditButton.addEventListener("click", () => {
+  addDraftAnnotation(true);
+});
+
+editTitleInput.addEventListener("input", () => {
+  if (!state.editDraft) {
+    return;
+  }
+  state.editDraft.title = editTitleInput.value;
 });
 
 openContextButton.addEventListener("click", () => {

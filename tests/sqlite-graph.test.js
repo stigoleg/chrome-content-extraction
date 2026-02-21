@@ -15,13 +15,16 @@ import {
   SQLITE_DB_SCHEMA_VERSION,
   ensureSchemaV2,
   getDbSchemaVersion,
+  getCaptureEditVersion,
+  getCaptureForEditing,
   getDocumentByUrl,
   getDocumentContext,
   hasChunkFtsIndex,
   migrateLegacyToV2,
   runDatabaseMaintenance,
   saveRecordToDbV2,
-  searchChunksByText
+  searchChunksByText,
+  updateCaptureInDb
 } from "../src/sqlite.js";
 
 const SQL = await initSqlJs({
@@ -869,6 +872,213 @@ test("buildJsonChunksForRecord returns document, note/highlight, and transcript 
     ),
     true
   );
+});
+
+test("updateCaptureInDb updates title and annotations while preserving capture identity", () => {
+  const db = new SQL.Database();
+  try {
+    const record = {
+      id: "capture-edit-1",
+      schemaVersion: "1.4.0",
+      captureType: "selected_text",
+      savedAt: "2026-02-21T17:00:00.000Z",
+      source: {
+        url: "https://example.com/edit-1",
+        title: "Before Title",
+        site: "example.com",
+        language: "en",
+        metadata: {}
+      },
+      content: {
+        documentText: "A text body used for edit verification.",
+        documentTextWordCount: 7,
+        documentTextCharacterCount: 36,
+        contentHash: "edit-hash-1",
+        annotations: [
+          {
+            selectedText: "text body",
+            comment: null,
+            createdAt: "2026-02-21T17:00:01.000Z"
+          }
+        ],
+        transcriptText: null,
+        transcriptSegments: null
+      }
+    };
+
+    saveRecordToDbV2(db, record);
+    const expectedVersion = getCaptureEditVersion(db, "capture-edit-1");
+    const updated = updateCaptureInDb(
+      db,
+      "capture-edit-1",
+      {
+        title: "After Title",
+        annotations: [
+          {
+            selectedText: "text body",
+            comment: "updated note",
+            createdAt: "2026-02-21T17:00:02.000Z"
+          },
+          {
+            selectedText: "edit verification",
+            comment: null,
+            createdAt: "2026-02-21T17:00:03.000Z"
+          }
+        ]
+      },
+      {
+        expectedVersion,
+        editorVersion: "test-editor"
+      }
+    );
+
+    assert.equal(updated.captureId, "capture-edit-1");
+    assert.equal(scalar(db, `SELECT COUNT(*) FROM captures WHERE capture_id = 'capture-edit-1';`), 1);
+    assert.equal(scalar(db, `SELECT title FROM documents LIMIT 1;`), "After Title");
+    assert.equal(
+      scalar(db, `SELECT editor_version FROM captures WHERE capture_id = 'capture-edit-1';`),
+      "test-editor"
+    );
+    assert.equal(
+      scalar(db, `SELECT edited_at FROM captures WHERE capture_id = 'capture-edit-1';`) !== null,
+      true
+    );
+    assert.equal(scalar(db, `SELECT COUNT(*) FROM annotations WHERE capture_id = 'capture-edit-1';`), 2);
+  } finally {
+    db.close();
+  }
+});
+
+test("updateCaptureInDb rejects stale edits", () => {
+  const db = new SQL.Database();
+  try {
+    const record = {
+      id: "capture-edit-stale-1",
+      schemaVersion: "1.4.0",
+      captureType: "selected_text",
+      savedAt: "2026-02-21T17:20:00.000Z",
+      source: {
+        url: "https://example.com/edit-stale-1",
+        title: "Stale Title",
+        site: "example.com",
+        language: "en",
+        metadata: {}
+      },
+      content: {
+        documentText: "Stale content body.",
+        documentTextWordCount: 3,
+        documentTextCharacterCount: 18,
+        contentHash: "edit-stale-hash-1",
+        annotations: null,
+        transcriptText: null,
+        transcriptSegments: null
+      }
+    };
+
+    saveRecordToDbV2(db, record);
+    const staleVersion = getCaptureEditVersion(db, "capture-edit-stale-1");
+    updateCaptureInDb(
+      db,
+      "capture-edit-stale-1",
+      { title: "First update", annotations: null },
+      { expectedVersion: staleVersion, editorVersion: "test-editor" }
+    );
+
+    assert.throws(
+      () =>
+        updateCaptureInDb(
+          db,
+          "capture-edit-stale-1",
+          { title: "Second update should fail", annotations: null },
+          { expectedVersion: staleVersion, editorVersion: "test-editor" }
+        ),
+      /modified elsewhere/i
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test("updateCaptureInDb rolls back changes on failure", () => {
+  const db = new SQL.Database();
+  try {
+    const record = {
+      id: "capture-edit-rollback-1",
+      schemaVersion: "1.4.0",
+      captureType: "selected_text",
+      savedAt: "2026-02-21T17:30:00.000Z",
+      source: {
+        url: "https://example.com/edit-rollback-1",
+        title: "Rollback Title",
+        site: "example.com",
+        language: "en",
+        metadata: {}
+      },
+      content: {
+        documentText: "Rollback text body.",
+        documentTextWordCount: 3,
+        documentTextCharacterCount: 18,
+        contentHash: "edit-rollback-hash-1",
+        annotations: [
+          {
+            selectedText: "Rollback text",
+            comment: null,
+            createdAt: "2026-02-21T17:30:01.000Z"
+          }
+        ],
+        transcriptText: null,
+        transcriptSegments: null
+      }
+    };
+
+    saveRecordToDbV2(db, record);
+    const before = getCaptureForEditing(db, "capture-edit-rollback-1");
+    const expectedVersion = before.editVersion;
+
+    assert.throws(
+      () =>
+        updateCaptureInDb(
+          db,
+          "capture-edit-rollback-1",
+          {
+            title: "Should Rollback",
+            annotations: [
+              {
+                selectedText: "Rollback text",
+                comment: "would fail",
+                createdAt: "2026-02-21T17:30:05.000Z"
+              }
+            ]
+          },
+          {
+            expectedVersion,
+            editorVersion: "test-editor",
+            __testFailAfterSave: true
+          }
+        ),
+      /Forced rollback/i
+    );
+
+    assert.equal(
+      scalar(db, `SELECT title FROM documents WHERE url = 'https://example.com/edit-rollback-1';`),
+      "Rollback Title"
+    );
+    assert.equal(
+      scalar(
+        db,
+        `
+          SELECT comment
+          FROM annotations
+          WHERE capture_id = 'capture-edit-rollback-1'
+          ORDER BY created_at ASC
+          LIMIT 1;
+        `
+      ),
+      null
+    );
+  } finally {
+    db.close();
+  }
 });
 
 test("SaveOperationQueue serializes rapid sqlite saves without corruption", async () => {

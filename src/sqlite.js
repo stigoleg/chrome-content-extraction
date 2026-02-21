@@ -1,6 +1,7 @@
 import initSqlJs from "./vendor/sql-wasm.js";
 import { writeFileHandleWithRetry } from "./write-retry.js";
 import { sanitizeAnnotations } from "./annotation-policy.js";
+import { SCHEMA_VERSION } from "./schema.js";
 import {
   getDocumentByUrl,
   getDocumentContext,
@@ -379,6 +380,8 @@ function ensureCoreTablesV2(db) {
       document_id TEXT NOT NULL REFERENCES documents(document_id),
       capture_type TEXT NOT NULL,
       saved_at TEXT NOT NULL,
+      edited_at TEXT NULL,
+      editor_version TEXT NULL,
       content_hash TEXT NULL,
       document_text TEXT NULL,
       document_text_word_count INTEGER NULL,
@@ -530,6 +533,8 @@ function ensureSchemaColumnsV5(db) {
   ensureColumnInTable(db, "documents", "normalized_url", "TEXT", null);
   db.run(`CREATE INDEX IF NOT EXISTS documents_canonical_url ON documents(canonical_url);`);
   db.run(`CREATE INDEX IF NOT EXISTS documents_normalized_url ON documents(normalized_url);`);
+  ensureColumnInTable(db, "captures", "edited_at", "TEXT", null);
+  ensureColumnInTable(db, "captures", "editor_version", "TEXT", null);
   ensureColumnInTable(db, "chunks", "is_preview", "INTEGER", "0");
   ensureColumnInTable(db, "chunks", "chunk_index", "INTEGER", null);
 }
@@ -1089,6 +1094,8 @@ export function insertCaptureV2(db, record, documentId) {
       document_id,
       capture_type,
       saved_at,
+      edited_at,
+      editor_version,
       content_hash,
       document_text,
       document_text_word_count,
@@ -1098,7 +1105,7 @@ export function insertCaptureV2(db, record, documentId) {
       transcript_segments_json,
       diagnostics_json,
       legacy_record_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
   `);
 
   try {
@@ -1107,6 +1114,8 @@ export function insertCaptureV2(db, record, documentId) {
       documentId,
       normalizeNullableString(record?.captureType) || "selected_text",
       normalizeIsoTimestamp(record?.savedAt),
+      normalizeIsoTimestamp(record?.editMetadata?.editedAt, null),
+      normalizeNullableString(record?.editMetadata?.editorVersion),
       normalizeNullableString(content.contentHash),
       documentText,
       wordCount,
@@ -1256,6 +1265,261 @@ function buildChunkRows(record, documentId, captureId) {
     chunkRows: rows,
     annotationRows: annotations,
     transcriptSegmentRows: transcriptSegments
+  };
+}
+
+function createStaleEditError(message = "Capture was modified elsewhere. Reload and try again.") {
+  const error = /** @type {any} */ (new Error(message));
+  error.code = "STALE_EDIT";
+  return error;
+}
+
+function getCaptureEditState(db, captureId) {
+  const normalizedCaptureId = normalizeNullableString(captureId);
+  if (!normalizedCaptureId) {
+    return null;
+  }
+  return runSelectOne(
+    db,
+    `
+      SELECT capture_id, saved_at, edited_at, editor_version
+      FROM captures
+      WHERE capture_id = ?
+      LIMIT 1;
+    `,
+    [normalizedCaptureId]
+  );
+}
+
+function buildCaptureEditVersionFromRow(row) {
+  if (!row?.capture_id) {
+    return null;
+  }
+  return [
+    String(row.capture_id),
+    String(row.saved_at || ""),
+    String(row.edited_at || ""),
+    String(row.editor_version || "")
+  ].join("|");
+}
+
+export function getCaptureEditVersion(db, captureId) {
+  const row = getCaptureEditState(db, captureId);
+  return buildCaptureEditVersionFromRow(row);
+}
+
+function readCaptureRecordForUpdate(db, captureId) {
+  const normalizedCaptureId = normalizeNullableString(captureId);
+  if (!normalizedCaptureId) {
+    throw new Error("captureId is required");
+  }
+
+  const captureRow = runSelectOne(
+    db,
+    `
+      SELECT
+        c.capture_id,
+        c.capture_type,
+        c.saved_at,
+        c.edited_at,
+        c.editor_version,
+        c.content_hash,
+        c.document_text,
+        c.document_text_word_count,
+        c.document_text_character_count,
+        c.document_text_compressed_json,
+        c.transcript_text,
+        c.transcript_segments_json,
+        c.diagnostics_json,
+        d.document_id,
+        d.url,
+        d.canonical_url,
+        d.title,
+        d.site,
+        d.language,
+        d.published_at,
+        d.metadata_json
+      FROM captures c
+      INNER JOIN documents d ON d.document_id = c.document_id
+      WHERE c.capture_id = ?
+      LIMIT 1;
+    `,
+    [normalizedCaptureId]
+  );
+
+  if (!captureRow) {
+    throw new Error(`Capture not found: ${normalizedCaptureId}`);
+  }
+
+  const annotationRows = runSelectAll(
+    db,
+    `
+      SELECT annotation_id, selected_text, comment, created_at
+      FROM annotations
+      WHERE capture_id = ?
+      ORDER BY created_at ASC, annotation_id ASC;
+    `,
+    [normalizedCaptureId]
+  );
+
+  const transcriptRows = runSelectAll(
+    db,
+    `
+      SELECT segment_index, timestamp_text, text
+      FROM transcript_segments
+      WHERE capture_id = ?
+      ORDER BY segment_index ASC, segment_id ASC;
+    `,
+    [normalizedCaptureId]
+  );
+
+  const transcriptSegments = transcriptRows.length
+    ? transcriptRows.map((row) => ({
+        timestamp: normalizeNullableString(row.timestamp_text),
+        text: String(row.text || "")
+      }))
+    : decodeJson(captureRow.transcript_segments_json, null);
+
+  const record = {
+    schemaVersion: SCHEMA_VERSION,
+    id: captureRow.capture_id,
+    captureType: normalizeNullableString(captureRow.capture_type) || "selected_text",
+    savedAt: normalizeIsoTimestamp(captureRow.saved_at),
+    source: {
+      url: normalizeNullableString(captureRow.url) || sourceUrlForRecord({ id: captureRow.capture_id }),
+      title: normalizeNullableString(captureRow.title),
+      site: normalizeNullableString(captureRow.site),
+      language: normalizeNullableString(captureRow.language),
+      publishedAt: normalizeNullableString(captureRow.published_at),
+      metadata: decodeJson(captureRow.metadata_json, {})
+    },
+    content: {
+      documentText:
+        captureRow.document_text === undefined || captureRow.document_text === null
+          ? null
+          : String(captureRow.document_text),
+      documentTextWordCount: parseInteger(captureRow.document_text_word_count, 0),
+      documentTextCharacterCount: parseInteger(captureRow.document_text_character_count, 0),
+      contentHash: normalizeNullableString(captureRow.content_hash),
+      documentTextCompressed: decodeJson(captureRow.document_text_compressed_json, null),
+      transcriptText:
+        captureRow.transcript_text === undefined || captureRow.transcript_text === null
+          ? null
+          : String(captureRow.transcript_text),
+      transcriptSegments: Array.isArray(transcriptSegments) ? transcriptSegments : null,
+      annotations: annotationRows.length
+        ? annotationRows.map((row) => ({
+            selectedText: row.selected_text === undefined ? "" : String(row.selected_text || ""),
+            comment: normalizeNullableString(row.comment),
+            createdAt: normalizeIsoTimestamp(row.created_at, captureRow.saved_at)
+          }))
+        : null
+    },
+    diagnostics: decodeJson(captureRow.diagnostics_json, null),
+    editMetadata: {
+      editedAt: normalizeNullableString(captureRow.edited_at),
+      editorVersion: normalizeNullableString(captureRow.editor_version)
+    }
+  };
+
+  return {
+    record,
+    captureRow
+  };
+}
+
+function applyEditsToStoredRecord(record, edits = {}, options = {}) {
+  const normalizedEdits =
+    edits && typeof edits === "object" ? /** @type {Record<string, any>} */ (edits) : {};
+  const nowIso = normalizeIsoTimestamp(options.editedAt);
+  const editorVersion = normalizeNullableString(options.editorVersion) || "library-ui";
+
+  const source = {
+    ...(record?.source || {})
+  };
+  if (Object.prototype.hasOwnProperty.call(normalizedEdits, "title")) {
+    const title = normalizeNullableString(normalizedEdits.title);
+    source.title = title;
+  }
+
+  const content = {
+    ...(record?.content || {})
+  };
+  if (Object.prototype.hasOwnProperty.call(normalizedEdits, "annotations")) {
+    const { annotations } = sanitizeAnnotations(normalizedEdits.annotations, {
+      savedAt: record?.savedAt || nowIso
+    });
+    content.annotations = annotations.length ? annotations : null;
+  }
+
+  return {
+    ...record,
+    source,
+    content,
+    editMetadata: {
+      editedAt: nowIso,
+      editorVersion
+    }
+  };
+}
+
+export function updateCaptureInDb(db, captureId, edits = {}, options = {}) {
+  const ensureSchema = options.ensureSchema !== false;
+  const useTransaction = options.useTransaction !== false;
+  const expectedVersion = normalizeNullableString(options.expectedVersion);
+
+  if (ensureSchema) {
+    ensureSchemaV2(db);
+  }
+
+  const runUpdate = () => {
+    const { record, captureRow } = readCaptureRecordForUpdate(db, captureId);
+    const currentVersion = buildCaptureEditVersionFromRow(captureRow);
+    if (expectedVersion && currentVersion && expectedVersion !== currentVersion) {
+      throw createStaleEditError();
+    }
+
+    const nextRecord = applyEditsToStoredRecord(record, edits, options);
+    const result = saveRecordToDbV2(db, nextRecord, {
+      ensureSchema: false,
+      useTransaction: false
+    });
+
+    if (options.__testFailAfterSave === true) {
+      throw new Error("Forced rollback after save");
+    }
+
+    return {
+      ...result,
+      captureId: result.captureId || String(captureId || ""),
+      editVersion: getCaptureEditVersion(db, result.captureId || captureId)
+    };
+  };
+
+  if (!useTransaction) {
+    return runUpdate();
+  }
+
+  db.run("BEGIN;");
+  try {
+    const result = runUpdate();
+    db.run("COMMIT;");
+    return result;
+  } catch (error) {
+    try {
+      db.run("ROLLBACK;");
+    } catch (_rollbackError) {
+      // Ignore rollback errors and surface original failure.
+    }
+    throw error;
+  }
+}
+
+export function getCaptureForEditing(db, captureId) {
+  const { record, captureRow } = readCaptureRecordForUpdate(db, captureId);
+  return {
+    record,
+    editVersion: buildCaptureEditVersionFromRow(captureRow)
   };
 }
 
