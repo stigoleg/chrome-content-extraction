@@ -1,6 +1,6 @@
 {
   "name": "context-capture-saver",
-  "version": "1.3.0",
+  "version": "1.3.5",
   "private": true,
   "type": "module",
   "scripts": {
