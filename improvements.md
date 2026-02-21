@@ -191,6 +191,13 @@ Desired result: Pending highlight/note visualization works reliably across brows
 - [ ] Add browser compatibility test cases.
 - [ ] Run `npm run check`, `npm run typecheck`, and `npm test`; resolve failures.
 - [ ] Commit with a short message, e.g. `content: add highlight fallback renderer`.
+- [x] Implement DOM wrapper fallback renderer.
+- [x] Style highlight vs note states distinctly.
+- [x] Ensure delete/clear restores DOM cleanly.
+- [x] Add performance guardrails for large pages.
+- [x] Add browser compatibility test cases.
+- [x] Run `npm run check`, `npm run typecheck`, and `npm test`; resolve failures.
+- [x] Commit with a short message, e.g. `content: add highlight fallback renderer`.
 
 ## 14. Strengthen runtime message validation
 Description: Prevent malformed messages from triggering undefined behavior in service worker/content script.

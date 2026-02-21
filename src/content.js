@@ -953,6 +953,9 @@ const CAPTURE_SETTINGS_KEY = "captureSettings";
 const supportsCssHighlights = typeof globalThis.Highlight === "function" && Boolean(globalThis.CSS?.highlights);
 const pendingAnnotationPreviews = new Map();
 const pendingAnnotationSnapshot = new Map();
+const pendingAnnotationFallbackWrappers = new Map();
+const MAX_DOM_PREVIEW_WRAPPERS = 120;
+const MAX_DOM_PREVIEW_TEXT_CHARS = 900;
 
 const BUBBLE_ACTION_META = {
   save_content: {
@@ -1406,6 +1409,19 @@ function ensureCommentStyles() {
       color: inherit;
     }
 
+    .ccs-pending-highlight-fallback {
+      background: rgba(251, 191, 36, 0.42);
+      color: inherit;
+      border-radius: 2px;
+    }
+
+    .ccs-pending-note-fallback {
+      background: rgba(250, 204, 21, 0.48);
+      color: inherit;
+      border-radius: 2px;
+      box-shadow: inset 0 -1px 0 rgba(124, 45, 18, 0.35);
+    }
+
     .ccs-selection-bubble {
       position: fixed;
       --bubble-bg: rgba(12, 19, 32, 0.88);
@@ -1711,8 +1727,71 @@ function findAnnotationPreviewRange(annotation, usedRangeKeys = new Set()) {
   return null;
 }
 
+function unwrapPendingFallbackWrappers(annotationId = null) {
+  const targets = annotationId
+    ? [[annotationId, pendingAnnotationFallbackWrappers.get(annotationId) || []]]
+    : [...pendingAnnotationFallbackWrappers.entries()];
+
+  for (const [id, wrappers] of targets) {
+    for (const wrapper of wrappers) {
+      if (!(wrapper instanceof HTMLElement) || !wrapper.isConnected) {
+        continue;
+      }
+      const parent = wrapper.parentNode;
+      if (!parent) {
+        continue;
+      }
+      while (wrapper.firstChild) {
+        parent.insertBefore(wrapper.firstChild, wrapper);
+      }
+      parent.removeChild(wrapper);
+      parent.normalize();
+    }
+    pendingAnnotationFallbackWrappers.delete(id);
+  }
+}
+
+function applyPendingFallbackWrappers() {
+  unwrapPendingFallbackWrappers();
+  let wrappedCount = 0;
+  for (const [annotationId, preview] of pendingAnnotationPreviews.entries()) {
+    if (!preview?.range || wrappedCount >= MAX_DOM_PREVIEW_WRAPPERS) {
+      continue;
+    }
+    const range = preview.range.cloneRange();
+    const rangeText = normalizeText(range.toString() || "");
+    if (!rangeText || rangeText.length > MAX_DOM_PREVIEW_TEXT_CHARS) {
+      continue;
+    }
+
+    const wrapper = document.createElement("span");
+    wrapper.className = preview.comment
+      ? "ccs-pending-note-fallback"
+      : "ccs-pending-highlight-fallback";
+    wrapper.dataset.ccsPendingPreview = annotationId;
+
+    try {
+      range.surroundContents(wrapper);
+    } catch (_error) {
+      try {
+        const extracted = range.extractContents();
+        wrapper.appendChild(extracted);
+        range.insertNode(wrapper);
+      } catch (_innerError) {
+        continue;
+      }
+    }
+
+    const existing = pendingAnnotationFallbackWrappers.get(annotationId) || [];
+    existing.push(wrapper);
+    pendingAnnotationFallbackWrappers.set(annotationId, existing);
+    wrappedCount += 1;
+  }
+}
+
 function refreshPendingAnnotationHighlights() {
   if (!supportsCssHighlights) {
+    applyPendingFallbackWrappers();
     return;
   }
 
@@ -1746,6 +1825,7 @@ function refreshPendingAnnotationHighlights() {
 function clearPendingAnnotationHighlights() {
   pendingAnnotationSnapshot.clear();
   pendingAnnotationPreviews.clear();
+  unwrapPendingFallbackWrappers();
   if (!supportsCssHighlights) {
     return;
   }
@@ -1764,6 +1844,12 @@ function syncPendingAnnotationPreviews(annotations = []) {
         }))
         .filter((annotation) => annotation.id)
     : [];
+
+  if (!supportsCssHighlights) {
+    // DOM fallback mutates text nodes, so reset wrappers and cached ranges before rematching.
+    unwrapPendingFallbackWrappers();
+    pendingAnnotationPreviews.clear();
+  }
 
   const nextIds = new Set(normalized.map((annotation) => annotation.id));
   for (const existingId of [...pendingAnnotationSnapshot.keys()]) {
