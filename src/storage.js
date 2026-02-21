@@ -1,3 +1,5 @@
+import { writeFileHandleWithRetry } from "./write-retry.js";
+
 const DB_NAME = "context-capture-db";
 const DB_VERSION = 1;
 const STORE_NAME = "handles";
@@ -9,15 +11,6 @@ function closeDbSafely(db) {
   } catch (_error) {
     // Ignore close errors; IndexedDB connection cleanup is best effort.
   }
-}
-
-function buildWriteCloseError(target, writeError, closeError) {
-  const writeMessage = writeError?.message || "write failed";
-  const closeMessage = closeError?.message || "close failed";
-  return new Error(
-    `Failed while writing ${target}: ${writeMessage}. ` +
-      `Also failed to close stream: ${closeMessage}.`
-  );
 }
 
 function openDb() {
@@ -147,23 +140,7 @@ async function getNestedDirectoryHandle(rootHandle, segments) {
 export async function writeJsonToDirectory(handle, fileName, payload, subdirectories = []) {
   const targetHandle = await getNestedDirectoryHandle(handle, subdirectories);
   const fileHandle = await targetHandle.getFileHandle(fileName, { create: true });
-  const writable = await fileHandle.createWritable();
-  let writeError = null;
-  try {
-    await writable.write(`${JSON.stringify(payload, null, 2)}\n`);
-  } catch (error) {
-    writeError = error;
-  } finally {
-    try {
-      await writable.close();
-    } catch (closeError) {
-      if (writeError) {
-        throw buildWriteCloseError(fileName, writeError, closeError);
-      }
-      throw closeError;
-    }
-  }
-  if (writeError) {
-    throw writeError;
-  }
+  await writeFileHandleWithRetry(fileHandle, `${JSON.stringify(payload, null, 2)}\n`, {
+    target: fileName
+  });
 }

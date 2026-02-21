@@ -101,6 +101,13 @@ Desired result: Temporary write failures are retried safely before surfacing err
 - [ ] Add tests for transient failure scenarios.
 - [ ] Run `npm run check`, `npm run typecheck`, and `npm test`; resolve failures.
 - [ ] Commit with a short message, e.g. `storage: add bounded write retries`.
+- [x] Add bounded retry logic for JSON writes.
+- [x] Add bounded retry logic for SQLite writes.
+- [x] Keep write/close error composition clear.
+- [x] Retry only retryable errors.
+- [x] Add tests for transient failure scenarios.
+- [x] Run `npm run check`, `npm run typecheck`, and `npm test`; resolve failures.
+- [x] Commit with a short message, e.g. `storage: add bounded write retries`.
 
 ## 9. Add input size guards for annotations/comments
 Description: Prevent oversized payloads from degrading performance or creating pathological records.

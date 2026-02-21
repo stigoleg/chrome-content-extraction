@@ -1,4 +1,5 @@
 import initSqlJs from "./vendor/sql-wasm.js";
+import { writeFileHandleWithRetry } from "./write-retry.js";
 
 export const DEFAULT_DB_NAME = "context-captures.sqlite";
 export const SQLITE_DB_SCHEMA_VERSION = 5;
@@ -212,15 +213,6 @@ function runSelectAll(db, sql, params = []) {
   } finally {
     stmt.free();
   }
-}
-
-function buildWriteCloseError(target, writeError, closeError) {
-  const writeMessage = writeError?.message || "write failed";
-  const closeMessage = closeError?.message || "close failed";
-  return new Error(
-    `Failed while writing ${target}: ${writeMessage}. ` +
-      `Also failed to close stream: ${closeMessage}.`
-  );
 }
 
 function scalarValue(db, sql, params = []) {
@@ -2330,25 +2322,7 @@ export async function saveRecordToSqlite(directoryHandle, record, dbFileName = D
   try {
     saveRecordToDbV2(db, record, { ensureSchema: false, useTransaction: true });
     const binaryArray = db.export();
-    const writable = await fileHandle.createWritable();
-    let writeError = null;
-    try {
-      await writable.write(binaryArray);
-    } catch (error) {
-      writeError = error;
-    } finally {
-      try {
-        await writable.close();
-      } catch (closeError) {
-        if (writeError) {
-          throw buildWriteCloseError(dbFileName, writeError, closeError);
-        }
-        throw closeError;
-      }
-    }
-    if (writeError) {
-      throw writeError;
-    }
+    await writeFileHandleWithRetry(fileHandle, binaryArray, { target: dbFileName });
     return dbFileName;
   } finally {
     db.close();
